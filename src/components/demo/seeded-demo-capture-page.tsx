@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Capture, RecipeDraft, TranscriptSegment } from "@/src/lib/recipe/types";
 
+import { ProvenanceEvidencePanel } from "./provenance-evidence-panel";
 import { RecipeDraftPreviewCard } from "./recipe-draft-preview-card";
 import { TranscriptSegmentsPanel } from "./transcript-segments-panel";
 
@@ -20,7 +21,15 @@ export function SeededDemoCapturePage({
 }: SeededDemoCapturePageProps) {
   const [hasStartedDemo, setHasStartedDemo] = useState(false);
   const [isWorkspaceHighlighted, setIsWorkspaceHighlighted] = useState(false);
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
+
+  const segmentsById = new Map(transcriptSegments.map((segment) => [segment.id, segment]));
+  const selectedStep =
+    recipeDraft?.steps.find((step) => step.id === selectedStepId) ?? null;
+  const highlightedSegmentIds = selectedStep
+    ? [...new Set(selectedStep.provenance.map((link) => link.transcriptSegmentId))]
+    : [];
 
   useEffect(() => {
     if (!hasStartedDemo) {
@@ -133,9 +142,16 @@ export function SeededDemoCapturePage({
             </div>
 
             <div className="grid gap-8 lg:grid-cols-2">
-              <TranscriptSegmentsPanel segments={transcriptSegments} />
+              <TranscriptSegmentsPanel
+                segments={transcriptSegments}
+                highlightedSegmentIds={highlightedSegmentIds}
+              />
               {recipeDraft ? (
-                <RecipeDraftPreviewCard draft={recipeDraft} />
+                <RecipeDraftPreviewCard
+                  draft={recipeDraft}
+                  selectedStepId={selectedStepId}
+                  onStepSelect={setSelectedStepId}
+                />
               ) : (
                 <section className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 p-6">
                   <h3 className="text-lg font-semibold text-stone-900">Recipe draft</h3>
@@ -145,6 +161,8 @@ export function SeededDemoCapturePage({
                 </section>
               )}
             </div>
+
+            <ProvenanceEvidencePanel step={selectedStep} segmentsById={segmentsById} />
 
             <p className="rounded-xl border border-amber-100 bg-amber-50/60 px-4 py-3 text-sm text-amber-950">
               Next up: record audio, transcribe, and extract a draft from your own memory. For now,

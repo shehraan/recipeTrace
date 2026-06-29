@@ -2,11 +2,16 @@ import type { RecipeDraft } from "@/src/lib/recipe/types";
 
 type RecipeDraftPreviewCardProps = {
   draft: RecipeDraft;
+  selectedStepId: string | null;
+  onStepSelect: (stepId: string) => void;
 };
 
-export function RecipeDraftPreviewCard({ draft }: RecipeDraftPreviewCardProps) {
-  const previewSteps = draft.steps.slice(0, 3);
-  const remainingSteps = draft.steps.length - previewSteps.length;
+export function RecipeDraftPreviewCard({
+  draft,
+  selectedStepId,
+  onStepSelect,
+}: RecipeDraftPreviewCardProps) {
+  const sortedSteps = [...draft.steps].sort((a, b) => a.orderIndex - b.orderIndex);
 
   return (
     <article className="rounded-2xl border border-amber-200/80 bg-white p-6 shadow-sm">
@@ -40,22 +45,39 @@ export function RecipeDraftPreviewCard({ draft }: RecipeDraftPreviewCardProps) {
       </dl>
 
       <div className="mt-6">
-        <h4 className="text-sm font-medium text-stone-900">First steps</h4>
-        <ol className="mt-3 space-y-3">
-          {previewSteps.map((step) => (
-            <li key={step.id} className="flex gap-3 text-sm leading-relaxed text-stone-700">
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-semibold text-amber-900">
-                {step.orderIndex + 1}
-              </span>
-              <span>{step.instruction}</span>
-            </li>
-          ))}
+        <h4 className="text-sm font-medium text-stone-900">Steps</h4>
+        <p className="mt-1 text-xs text-stone-500">Click a step to trace it back to the transcript.</p>
+        <ol className="mt-3 space-y-2">
+          {sortedSteps.map((step) => {
+            const isSelected = selectedStepId === step.id;
+
+            return (
+              <li key={step.id}>
+                <button
+                  type="button"
+                  onClick={() => onStepSelect(step.id)}
+                  aria-pressed={isSelected}
+                  className={`flex w-full gap-3 rounded-xl border px-3 py-3 text-left text-sm leading-relaxed transition ${
+                    isSelected
+                      ? "border-amber-300 bg-amber-50 text-stone-900 ring-1 ring-amber-200"
+                      : "border-transparent text-stone-700 hover:border-stone-200 hover:bg-stone-50"
+                  }`}
+                >
+                  <span
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                      isSelected
+                        ? "bg-amber-600 text-white"
+                        : "bg-amber-100 text-amber-900"
+                    }`}
+                  >
+                    {step.orderIndex + 1}
+                  </span>
+                  <span>{step.instruction}</span>
+                </button>
+              </li>
+            );
+          })}
         </ol>
-        {remainingSteps > 0 ? (
-          <p className="mt-3 text-xs text-stone-500">
-            + {remainingSteps} more step{remainingSteps === 1 ? "" : "s"} in the full draft
-          </p>
-        ) : null}
       </div>
     </article>
   );

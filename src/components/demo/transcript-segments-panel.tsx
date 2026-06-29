@@ -3,12 +3,16 @@ import type { TranscriptSegment } from "@/src/lib/recipe/types";
 type TranscriptSegmentsPanelProps = {
   segments: TranscriptSegment[];
   title?: string;
+  highlightedSegmentIds?: string[];
 };
 
 export function TranscriptSegmentsPanel({
   segments,
   title = "Transcript",
+  highlightedSegmentIds = [],
 }: TranscriptSegmentsPanelProps) {
+  const highlightedIds = new Set(highlightedSegmentIds);
+
   if (segments.length === 0) {
     return (
       <section className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 p-6">
@@ -33,26 +37,39 @@ export function TranscriptSegmentsPanel({
       </div>
 
       <ol className="mt-5 space-y-3">
-        {sortedSegments.map((segment) => (
-          <li
-            key={segment.id}
-            id={segment.id}
-            className="rounded-xl border border-stone-100 bg-stone-50/80 p-4"
-          >
-            <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-              <span className="rounded-md bg-white px-2 py-0.5 font-mono text-stone-600 ring-1 ring-stone-200 ring-inset">
-                {segment.id}
-              </span>
-              <span className="font-medium text-stone-700">#{segment.orderIndex + 1}</span>
-              {segment.speaker ? (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-900">
-                  {segment.speaker}
+        {sortedSegments.map((segment) => {
+          const isHighlighted = highlightedIds.has(segment.id);
+
+          return (
+            <li
+              key={segment.id}
+              id={segment.id}
+              className={`rounded-xl border p-4 transition ${
+                isHighlighted
+                  ? "border-amber-300 bg-amber-50 ring-1 ring-amber-200"
+                  : "border-stone-100 bg-stone-50/80"
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
+                <span className="rounded-md bg-white px-2 py-0.5 font-mono text-stone-600 ring-1 ring-stone-200 ring-inset">
+                  {segment.id}
                 </span>
-              ) : null}
-            </div>
-            <p className="mt-2 text-sm leading-relaxed text-stone-800">{segment.text}</p>
-          </li>
-        ))}
+                <span className="font-medium text-stone-700">#{segment.orderIndex + 1}</span>
+                {segment.speaker ? (
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-900">
+                    {segment.speaker}
+                  </span>
+                ) : null}
+                {isHighlighted ? (
+                  <span className="rounded-full bg-amber-600 px-2 py-0.5 font-medium text-white">
+                    Source match
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-2 text-sm leading-relaxed text-stone-800">{segment.text}</p>
+            </li>
+          );
+        })}
       </ol>
     </section>
   );
