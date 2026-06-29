@@ -3,8 +3,6 @@ import { z } from "zod";
 import {
   captureStatusValues,
   confidenceValues,
-  cueTypeValues,
-  questionTargetValues,
   type RecipeDraft,
   type TranscriptSegment,
 } from "./types";
@@ -314,6 +312,3 @@ export type CaptureInput = z.infer<typeof captureSchema>;
 export type TranscriptSegmentInput = z.infer<typeof transcriptSegmentSchema>;
 export type RecipeDraftInput = z.infer<typeof recipeDraftSchema>;
 export type LivingRecipeInput = z.infer<typeof livingRecipeSchema>;
-
-void cueTypeValues;
-void questionTargetValues;
