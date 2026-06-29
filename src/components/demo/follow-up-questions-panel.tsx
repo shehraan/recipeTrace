@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { FollowUpAnswer, OpenQuestion } from "@/src/lib/recipe/types";
 
@@ -10,7 +10,10 @@ type FollowUpQuestionsPanelProps = {
   onAnswersChange: (answers: Record<string, FollowUpAnswer>) => void;
 };
 
+type SaveStatus = "unanswered" | "typing" | "saved";
+
 const priorityOrder = { high: 0, medium: 1, low: 2 } as const;
+const AUTOSAVE_DEBOUNCE_MS = 1200;
 
 export function FollowUpQuestionsPanel({
   questions,
@@ -18,6 +21,9 @@ export function FollowUpQuestionsPanel({
   onAnswersChange,
 }: FollowUpQuestionsPanelProps) {
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string>>({});
+  const [saveStatus, setSaveStatus] = useState<Record<string, SaveStatus>>({});
+  const answersRef = useRef(answers);
+  answersRef.current = answers;
 
   const sortedQuestions = useMemo(
     () =>
@@ -35,6 +41,63 @@ export function FollowUpQuestionsPanel({
     [answers],
   );
 
+  const persistAnswer = (questionId: string, rawAnswer: string) => {
+    const answer = rawAnswer.trim();
+    const current = answersRef.current;
+
+    if (!answer) {
+      if (current[questionId]) {
+        const next = { ...current };
+        delete next[questionId];
+        onAnswersChange(next);
+      }
+      return;
+    }
+
+    if (current[questionId]?.answer === answer) {
+      return;
+    }
+
+    onAnswersChange({
+      ...current,
+      [questionId]: {
+        questionId,
+        answer,
+        answeredAt: new Date().toISOString(),
+      },
+    });
+  };
+
+  useEffect(() => {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    for (const question of questions) {
+      const questionId = question.id;
+      const draft =
+        draftAnswers[questionId] ?? answersRef.current[questionId]?.answer ?? "";
+
+      const timer = setTimeout(() => {
+        const trimmed = draft.trim();
+        if (!trimmed) {
+          persistAnswer(questionId, draft);
+          setSaveStatus((current) => ({ ...current, [questionId]: "unanswered" }));
+          return;
+        }
+
+        persistAnswer(questionId, draft);
+        setSaveStatus((current) => ({ ...current, [questionId]: "saved" }));
+      }, AUTOSAVE_DEBOUNCE_MS);
+
+      timers.push(timer);
+    }
+
+    return () => {
+      for (const timer of timers) {
+        clearTimeout(timer);
+      }
+    };
+  }, [draftAnswers, questions, onAnswersChange]);
+
   if (questions.length === 0) {
     return (
       <section className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 p-6">
@@ -44,34 +107,15 @@ export function FollowUpQuestionsPanel({
     );
   }
 
-  const handleSaveAnswer = (questionId: string) => {
-    const answer = draftAnswers[questionId]?.trim();
-    if (!answer) {
-      return;
-    }
-
-    onAnswersChange({
-      ...answers,
-      [questionId]: {
-        questionId,
-        answer,
-        answeredAt: new Date().toISOString(),
-      },
-    });
-  };
-
-  const handleEditAnswer = (questionId: string) => {
-    const existing = answers[questionId];
-    if (existing) {
-      setDraftAnswers((current) => ({
-        ...current,
-        [questionId]: existing.answer,
-      }));
-    }
-
-    const next = { ...answers };
-    delete next[questionId];
-    onAnswersChange(next);
+  const handleDraftChange = (questionId: string, value: string) => {
+    setDraftAnswers((current) => ({
+      ...current,
+      [questionId]: value,
+    }));
+    setSaveStatus((current) => ({
+      ...current,
+      [questionId]: value.trim() ? "typing" : "unanswered",
+    }));
   };
 
   return (
@@ -89,14 +133,16 @@ export function FollowUpQuestionsPanel({
 
         <ul className="mt-6 space-y-4">
           {sortedQuestions.map((question) => {
-            const resolved = answers[question.id];
-            const draftAnswer = draftAnswers[question.id] ?? "";
+            const savedAnswer = answers[question.id]?.answer;
+            const draftAnswer =
+              draftAnswers[question.id] ?? savedAnswer ?? "";
+            const isAnswered = Boolean(draftAnswer.trim());
 
             return (
               <li
                 key={question.id}
                 className={`rounded-xl border p-4 transition ${
-                  resolved
+                  isAnswered
                     ? "border-emerald-200 bg-emerald-50/60"
                     : "border-stone-100 bg-stone-50/80"
                 }`}
@@ -104,7 +150,7 @@ export function FollowUpQuestionsPanel({
                 <div className="flex flex-wrap items-center gap-2">
                   <PriorityBadge priority={question.priority} />
                   <TargetBadge target={question.target} />
-                  {resolved ? (
+                  {isAnswered ? (
                     <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
                       Answered
                     </span>
@@ -119,47 +165,29 @@ export function FollowUpQuestionsPanel({
                   {question.whyItMatters}
                 </p>
 
-                {resolved ? (
-                  <div className="mt-4 space-y-3">
-                    <p className="rounded-lg bg-white px-3 py-2 text-sm leading-relaxed text-stone-800 ring-1 ring-emerald-100 ring-inset">
-                      {resolved.answer}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => handleEditAnswer(question.id)}
-                      className="text-xs font-medium text-stone-600 underline-offset-2 hover:text-stone-900 hover:underline"
-                    >
-                      Edit answer
-                    </button>
-                  </div>
-                ) : (
-                  <div className="mt-4 space-y-3">
-                    <label htmlFor={`answer-${question.id}`} className="sr-only">
-                      Answer for {question.question}
-                    </label>
-                    <textarea
-                      id={`answer-${question.id}`}
-                      value={draftAnswer}
-                      onChange={(event) =>
-                        setDraftAnswers((current) => ({
-                          ...current,
-                          [question.id]: event.target.value,
-                        }))
-                      }
-                      rows={3}
-                      placeholder="Add what you know from memory or follow-up with the cook..."
-                      className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm leading-relaxed text-stone-800 placeholder:text-stone-400 focus:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-200"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleSaveAnswer(question.id)}
-                      disabled={!draftAnswer.trim()}
-                      className="inline-flex items-center justify-center rounded-full bg-amber-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-300"
-                    >
-                      Save answer
-                    </button>
-                  </div>
-                )}
+                <div className="mt-4 space-y-3">
+                  <label htmlFor={`answer-${question.id}`} className="sr-only">
+                    Answer for {question.question}
+                  </label>
+                  <textarea
+                    id={`answer-${question.id}`}
+                    value={draftAnswer}
+                    onChange={(event) => handleDraftChange(question.id, event.target.value)}
+                    rows={3}
+                    placeholder="Add what you know from memory or follow-up with the cook..."
+                    className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm leading-relaxed text-stone-800 placeholder:text-stone-400 focus:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                  />
+                  <AnswerSaveStatus
+                    status={
+                      saveStatus[question.id] ??
+                      (draftAnswer.trim()
+                        ? savedAnswer?.trim() === draftAnswer.trim()
+                          ? "saved"
+                          : "typing"
+                        : "unanswered")
+                    }
+                  />
+                </div>
               </li>
             );
           })}
@@ -202,6 +230,18 @@ export function FollowUpQuestionsPanel({
       ) : null}
     </div>
   );
+}
+
+function AnswerSaveStatus({ status }: { status: SaveStatus }) {
+  if (status === "typing") {
+    return <span className="text-xs font-medium text-amber-600">Unsaved changes</span>;
+  }
+
+  if (status === "saved") {
+    return <span className="text-xs font-medium text-emerald-600">Saved</span>;
+  }
+
+  return <span className="text-xs text-stone-400">Unanswered</span>;
 }
 
 function PriorityBadge({ priority }: { priority: OpenQuestion["priority"] }) {
