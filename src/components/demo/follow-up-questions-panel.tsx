@@ -6,12 +6,17 @@ import type { FollowUpAnswer, OpenQuestion } from "@/src/lib/recipe/types";
 
 type FollowUpQuestionsPanelProps = {
   questions: OpenQuestion[];
+  answers: Record<string, FollowUpAnswer>;
+  onAnswersChange: (answers: Record<string, FollowUpAnswer>) => void;
 };
 
 const priorityOrder = { high: 0, medium: 1, low: 2 } as const;
 
-export function FollowUpQuestionsPanel({ questions }: FollowUpQuestionsPanelProps) {
-  const [answers, setAnswers] = useState<Record<string, FollowUpAnswer>>({});
+export function FollowUpQuestionsPanel({
+  questions,
+  answers,
+  onAnswersChange,
+}: FollowUpQuestionsPanelProps) {
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string>>({});
 
   const sortedQuestions = useMemo(
@@ -45,14 +50,14 @@ export function FollowUpQuestionsPanel({ questions }: FollowUpQuestionsPanelProp
       return;
     }
 
-    setAnswers((current) => ({
-      ...current,
+    onAnswersChange({
+      ...answers,
       [questionId]: {
         questionId,
         answer,
         answeredAt: new Date().toISOString(),
       },
-    }));
+    });
   };
 
   const handleEditAnswer = (questionId: string) => {
@@ -64,11 +69,9 @@ export function FollowUpQuestionsPanel({ questions }: FollowUpQuestionsPanelProp
       }));
     }
 
-    setAnswers((current) => {
-      const next = { ...current };
-      delete next[questionId];
-      return next;
-    });
+    const next = { ...answers };
+    delete next[questionId];
+    onAnswersChange(next);
   };
 
   return (

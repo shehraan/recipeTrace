@@ -2,9 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { Capture, RecipeDraft, TranscriptSegment } from "@/src/lib/recipe/types";
+import type { Capture, FollowUpAnswer, LivingRecipe, RecipeDraft, TranscriptSegment } from "@/src/lib/recipe/types";
+import { buildLivingRecipeFromDraft } from "@/src/lib/recipe/build-living-recipe";
+import {
+  buildProvenanceSelection,
+  type ProvenanceSelectionSource,
+  stepHasAppliedAnswers,
+  stepHasUnresolvedDetails,
+} from "@/src/lib/recipe/provenance-selection";
 
 import { FollowUpQuestionsPanel } from "./follow-up-questions-panel";
+import { LivingRecipePanel } from "./living-recipe-panel";
 import { ProvenanceEvidencePanel } from "./provenance-evidence-panel";
 import { RecipeDraftPreviewCard } from "./recipe-draft-preview-card";
 import { TranscriptSegmentsPanel } from "./transcript-segments-panel";
@@ -23,14 +31,23 @@ export function SeededDemoCapturePage({
   const [hasStartedDemo, setHasStartedDemo] = useState(false);
   const [isWorkspaceHighlighted, setIsWorkspaceHighlighted] = useState(false);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const [selectionSource, setSelectionSource] = useState<ProvenanceSelectionSource | null>(null);
+  const [followUpAnswers, setFollowUpAnswers] = useState<Record<string, FollowUpAnswer>>({});
+  const [livingRecipe, setLivingRecipe] = useState<LivingRecipe | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const livingRecipeRef = useRef<HTMLDivElement>(null);
+  const provenanceWorkspaceRef = useRef<HTMLDivElement>(null);
 
   const segmentsById = new Map(transcriptSegments.map((segment) => [segment.id, segment]));
-  const selectedStep =
-    recipeDraft?.steps.find((step) => step.id === selectedStepId) ?? null;
-  const highlightedSegmentIds = selectedStep
-    ? [...new Set(selectedStep.provenance.map((link) => link.transcriptSegmentId))]
-    : [];
+  const questionsById = new Map(
+    recipeDraft?.openQuestions.map((question) => [question.id, question]) ?? [],
+  );
+  const provenanceSelection = buildProvenanceSelection(
+    selectedStepId,
+    recipeDraft,
+    livingRecipe,
+    followUpAnswers,
+  );
 
   useEffect(() => {
     if (!hasStartedDemo) {
@@ -56,6 +73,34 @@ export function SeededDemoCapturePage({
 
   const handleStartDemo = () => {
     setHasStartedDemo(true);
+  };
+
+  const handleStepSelect = (stepId: string, source: ProvenanceSelectionSource) => {
+    setSelectedStepId(stepId);
+    setSelectionSource(source);
+
+    if (source === "living") {
+      window.setTimeout(() => {
+        provenanceWorkspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 80);
+    }
+  };
+
+  const handleGenerateLivingRecipe = () => {
+    if (!recipeDraft) {
+      return;
+    }
+
+    const recipe = buildLivingRecipeFromDraft(
+      recipeDraft,
+      followUpAnswers,
+      transcriptSegments.length,
+    );
+    setLivingRecipe(recipe);
+
+    window.setTimeout(() => {
+      livingRecipeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
   };
 
   return (
@@ -142,31 +187,69 @@ export function SeededDemoCapturePage({
               </span>
             </div>
 
-            <div className="grid gap-8 lg:grid-cols-2">
-              <TranscriptSegmentsPanel
-                segments={transcriptSegments}
-                highlightedSegmentIds={highlightedSegmentIds}
-              />
-              {recipeDraft ? (
-                <RecipeDraftPreviewCard
-                  draft={recipeDraft}
-                  selectedStepId={selectedStepId}
-                  onStepSelect={setSelectedStepId}
+            <div ref={provenanceWorkspaceRef} className="space-y-8">
+              <div className="grid gap-8 lg:grid-cols-2">
+                <TranscriptSegmentsPanel
+                  segments={transcriptSegments}
+                  highlightedSegmentIds={provenanceSelection.highlightedSegmentIds}
                 />
-              ) : (
-                <section className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 p-6">
-                  <h3 className="text-lg font-semibold text-stone-900">Recipe draft</h3>
-                  <p className="mt-2 text-sm text-stone-500">
-                    No recipe draft is available for this capture yet.
-                  </p>
-                </section>
-              )}
+                {recipeDraft ? (
+                  <RecipeDraftPreviewCard
+                    draft={recipeDraft}
+                    selectedStepId={selectionSource === "draft" ? selectedStepId : null}
+                    onStepSelect={(stepId) => handleStepSelect(stepId, "draft")}
+                  />
+                ) : (
+                  <section className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 p-6">
+                    <h3 className="text-lg font-semibold text-stone-900">Recipe draft</h3>
+                    <p className="mt-2 text-sm text-stone-500">
+                      No recipe draft is available for this capture yet.
+                    </p>
+                  </section>
+                )}
+              </div>
+
+              <ProvenanceEvidencePanel
+                step={provenanceSelection.step}
+                segmentsById={segmentsById}
+                selectionSource={selectionSource}
+                appliedAnswers={provenanceSelection.appliedAnswers}
+                unresolvedForStep={provenanceSelection.unresolvedForStep}
+              />
             </div>
 
-            <ProvenanceEvidencePanel step={selectedStep} segmentsById={segmentsById} />
+            {recipeDraft ? (
+              <FollowUpQuestionsPanel
+                questions={recipeDraft.openQuestions}
+                answers={followUpAnswers}
+                onAnswersChange={setFollowUpAnswers}
+              />
+            ) : null}
 
             {recipeDraft ? (
-              <FollowUpQuestionsPanel questions={recipeDraft.openQuestions} />
+              <div className="flex flex-wrap items-center gap-4">
+                <button
+                  type="button"
+                  onClick={handleGenerateLivingRecipe}
+                  className="inline-flex items-center justify-center rounded-full bg-amber-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+                >
+                  {livingRecipe ? "Update living recipe" : "Generate living recipe"}
+                </button>
+                <p className="text-sm text-stone-500">
+                  Combines the source-backed draft with your follow-up answers — no API call.
+                </p>
+              </div>
+            ) : null}
+
+            {livingRecipe ? (
+              <div ref={livingRecipeRef}>
+                <LivingRecipePanel
+                  recipe={livingRecipe}
+                  questionsById={questionsById}
+                  selectedStepId={selectionSource === "living" ? selectedStepId : null}
+                  onStepSelect={(stepId) => handleStepSelect(stepId, "living")}
+                />
+              </div>
             ) : null}
 
             <p className="rounded-xl border border-amber-100 bg-amber-50/60 px-4 py-3 text-sm text-amber-950">
