@@ -94,7 +94,7 @@ export function EvidenceDrawer({
               {appliedAnswers.length > 0 ? (
                 <div className="mt-6 space-y-3">
                   <p className="text-xs font-medium uppercase tracking-wider text-emerald-700">
-                    User-answered details
+                    User answer evidence
                   </p>
                   {appliedAnswers.map(({ question, answer }) => (
                     <article

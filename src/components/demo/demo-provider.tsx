@@ -27,6 +27,9 @@ type DemoContextValue = {
   questionsById: Map<string, OpenQuestion>;
   followUpAnswers: Record<string, FollowUpAnswer>;
   setFollowUpAnswers: (answers: Record<string, FollowUpAnswer>) => void;
+  finalizeLivingRecipe: () => Promise<void>;
+  isFinalizingLivingRecipe: boolean;
+  finalizeLivingRecipeError: string | null;
   selectedStepId: string | null;
   selectionSource: ProvenanceSelectionSource | null;
   isDrawerOpen: boolean;
@@ -39,15 +42,77 @@ const DemoContext = createContext<DemoContextValue | null>(null);
 
 export function DemoProvider({ children }: { children: ReactNode }) {
   const { capture, transcriptSegments, recipeDraft } = seededDemo;
-  const [followUpAnswers, setFollowUpAnswers] = useState<Record<string, FollowUpAnswer>>({});
+  const [followUpAnswersState, setFollowUpAnswersState] = useState<Record<string, FollowUpAnswer>>({});
+  const [aiLivingRecipe, setAiLivingRecipe] = useState<LivingRecipe | null>(null);
+  const [isFinalizingLivingRecipe, setIsFinalizingLivingRecipe] = useState(false);
+  const [finalizeLivingRecipeError, setFinalizeLivingRecipeError] = useState<string | null>(null);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectionSource, setSelectionSource] = useState<ProvenanceSelectionSource | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
-  const livingRecipe = useMemo(
-    () => buildLivingRecipeFromDraft(recipeDraft, followUpAnswers, transcriptSegments.length),
-    [recipeDraft, followUpAnswers, transcriptSegments.length],
+  const fallbackLivingRecipe = useMemo(
+    () => buildLivingRecipeFromDraft(recipeDraft, followUpAnswersState, transcriptSegments.length),
+    [recipeDraft, followUpAnswersState, transcriptSegments.length],
   );
+
+  const livingRecipe = aiLivingRecipe ?? fallbackLivingRecipe;
+
+  const setFollowUpAnswers = useCallback((answers: Record<string, FollowUpAnswer>) => {
+    setFollowUpAnswersState(answers);
+    setAiLivingRecipe(null);
+    setFinalizeLivingRecipeError(null);
+  }, []);
+
+  const finalizeLivingRecipe = useCallback(async () => {
+    setIsFinalizingLivingRecipe(true);
+    setFinalizeLivingRecipeError(null);
+
+    try {
+      const response = await fetch("/api/recipes/finalize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          recipeDraft,
+          transcriptSegments,
+          followUpAnswers: followUpAnswersState,
+        }),
+      });
+
+      const payload: unknown = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const message =
+          payload &&
+          typeof payload === "object" &&
+          "error" in payload &&
+          typeof payload.error === "string"
+            ? payload.error
+            : "Unable to generate an AI-finalized living recipe.";
+        setFinalizeLivingRecipeError(`${message} Showing the local living recipe instead.`);
+        return;
+      }
+
+      if (
+        payload &&
+        typeof payload === "object" &&
+        "livingRecipe" in payload
+      ) {
+        setAiLivingRecipe(payload.livingRecipe as LivingRecipe);
+      } else {
+        setFinalizeLivingRecipeError(
+          "The finalization response was missing a living recipe. Showing the local living recipe instead.",
+        );
+      }
+    } catch {
+      setFinalizeLivingRecipeError(
+        "Unable to reach the finalization route. Showing the local living recipe instead.",
+      );
+    } finally {
+      setIsFinalizingLivingRecipe(false);
+    }
+  }, [recipeDraft, transcriptSegments, followUpAnswersState]);
 
   const segmentsById = useMemo(
     () => new Map(transcriptSegments.map((segment) => [segment.id, segment])),
@@ -65,9 +130,9 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         selectedStepId,
         recipeDraft,
         livingRecipe,
-        followUpAnswers,
+        followUpAnswersState,
       ),
-    [selectedStepId, recipeDraft, livingRecipe, followUpAnswers],
+    [selectedStepId, recipeDraft, livingRecipe, followUpAnswersState],
   );
 
   const openEvidenceDrawer = useCallback((stepId: string, source: ProvenanceSelectionSource) => {
@@ -88,8 +153,11 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       livingRecipe,
       segmentsById,
       questionsById,
-      followUpAnswers,
+      followUpAnswers: followUpAnswersState,
       setFollowUpAnswers,
+      finalizeLivingRecipe,
+      isFinalizingLivingRecipe,
+      finalizeLivingRecipeError,
       selectedStepId,
       selectionSource,
       isDrawerOpen,
@@ -104,13 +172,17 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       livingRecipe,
       segmentsById,
       questionsById,
-      followUpAnswers,
+      followUpAnswersState,
       selectedStepId,
       selectionSource,
       isDrawerOpen,
       provenanceSelection,
+      finalizeLivingRecipe,
+      isFinalizingLivingRecipe,
+      finalizeLivingRecipeError,
       openEvidenceDrawer,
       closeEvidenceDrawer,
+      setFollowUpAnswers,
     ],
   );
 

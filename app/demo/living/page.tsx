@@ -4,18 +4,44 @@ import { useDemo } from "@/src/components/demo/demo-provider";
 import { LivingRecipePanel } from "@/src/components/demo/living-recipe-panel";
 
 export default function LivingPage() {
-  const { livingRecipe, questionsById, openEvidenceDrawer, selectedStepId, selectionSource } =
-    useDemo();
+  const {
+    livingRecipe,
+    questionsById,
+    openEvidenceDrawer,
+    selectedStepId,
+    selectionSource,
+    finalizeLivingRecipe,
+    isFinalizingLivingRecipe,
+    finalizeLivingRecipeError,
+  } = useDemo();
 
   return (
     <div className="space-y-6">
-      <div>
-        <p className="text-sm font-medium uppercase tracking-wider text-amber-700">Step 4</p>
-        <h1 className="mt-1 text-3xl font-semibold text-stone-900">Living recipe</h1>
-        <p className="mt-2 text-sm leading-relaxed text-stone-600">
-          The final recipe combines source-backed steps with your follow-up answers. Click any step
-          to trace it in the evidence drawer.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-wider text-amber-700">Step 4</p>
+          <h1 className="mt-1 text-3xl font-semibold text-stone-900">Living recipe</h1>
+          <p className="mt-2 text-sm leading-relaxed text-stone-600">
+            The final recipe combines source-backed steps with your follow-up answers. Click any step
+            to trace it in the evidence drawer.
+          </p>
+        </div>
+
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <button
+            type="button"
+            onClick={finalizeLivingRecipe}
+            disabled={isFinalizingLivingRecipe}
+            className="rounded-full bg-amber-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-800 disabled:cursor-not-allowed disabled:bg-stone-300"
+          >
+            {isFinalizingLivingRecipe ? "Generating..." : "Generate living recipe"}
+          </button>
+          {finalizeLivingRecipeError ? (
+            <p className="max-w-sm text-sm leading-relaxed text-amber-800">
+              {finalizeLivingRecipeError}
+            </p>
+          ) : null}
+        </div>
       </div>
 
       <LivingRecipePanel
