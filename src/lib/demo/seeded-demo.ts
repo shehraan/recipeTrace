@@ -516,12 +516,12 @@ const rawSeededLivingRecipe: LivingRecipe = {
     },
   ],
   unresolvedQuestions: seededRecipeDraft.openQuestions.filter(
-    (question) => question.id !== "q_heat_level",
+    (question: { id: string }) => question.id !== "q_heat_level",
   ),
   sourceSummary: {
     transcriptSegmentCount: seededTranscriptSegments.length,
     supportedStepCount: seededRecipeDraft.steps.length,
-    inferredStepCount: seededRecipeDraft.steps.filter((step) => step.isInferred).length,
+    inferredStepCount: seededRecipeDraft.steps.filter((step: { isInferred: boolean }) => step.isInferred).length,
   },
   createdAt,
 };
