@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Capture, RecipeDraft, TranscriptSegment } from "@/src/lib/recipe/types";
 
+import { FollowUpQuestionsPanel } from "./follow-up-questions-panel";
 import { ProvenanceEvidencePanel } from "./provenance-evidence-panel";
 import { RecipeDraftPreviewCard } from "./recipe-draft-preview-card";
 import { TranscriptSegmentsPanel } from "./transcript-segments-panel";
@@ -163,6 +164,10 @@ export function SeededDemoCapturePage({
             </div>
 
             <ProvenanceEvidencePanel step={selectedStep} segmentsById={segmentsById} />
+
+            {recipeDraft ? (
+              <FollowUpQuestionsPanel questions={recipeDraft.openQuestions} />
+            ) : null}
 
             <p className="rounded-xl border border-amber-100 bg-amber-50/60 px-4 py-3 text-sm text-amber-950">
               Next up: record audio, transcribe, and extract a draft from your own memory. For now,
