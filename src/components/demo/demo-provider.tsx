@@ -32,10 +32,12 @@ type DemoContextValue = {
   finalizeLivingRecipeError: string | null;
   finalizeLivingRecipeStatus: string;
   selectedStepId: string | null;
+  selectedIngredientId: string | null;
   selectionSource: ProvenanceSelectionSource | null;
   isDrawerOpen: boolean;
   provenanceSelection: ProvenanceSelection;
   openEvidenceDrawer: (stepId: string, source: ProvenanceSelectionSource) => void;
+  openIngredientEvidenceDrawer: (ingredientId: string, source: ProvenanceSelectionSource) => void;
   closeEvidenceDrawer: () => void;
 };
 
@@ -49,6 +51,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   const [finalizeLivingRecipeError, setFinalizeLivingRecipeError] = useState<string | null>(null);
   const [finalizeLivingRecipeStatus, setFinalizeLivingRecipeStatus] = useState("Using local fallback");
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const [selectedIngredientId, setSelectedIngredientId] = useState<string | null>(null);
   const [selectionSource, setSelectionSource] = useState<ProvenanceSelectionSource | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
@@ -148,18 +151,30 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     () =>
       buildProvenanceSelection(
         selectedStepId,
+        selectedIngredientId,
         recipeDraft,
         livingRecipe,
         followUpAnswersState,
       ),
-    [selectedStepId, recipeDraft, livingRecipe, followUpAnswersState],
+    [selectedStepId, selectedIngredientId, recipeDraft, livingRecipe, followUpAnswersState],
   );
 
   const openEvidenceDrawer = useCallback((stepId: string, source: ProvenanceSelectionSource) => {
     setSelectedStepId(stepId);
+    setSelectedIngredientId(null);
     setSelectionSource(source);
     setIsDrawerOpen(true);
   }, []);
+
+  const openIngredientEvidenceDrawer = useCallback(
+    (ingredientId: string, source: ProvenanceSelectionSource) => {
+      setSelectedIngredientId(ingredientId);
+      setSelectedStepId(null);
+      setSelectionSource(source);
+      setIsDrawerOpen(true);
+    },
+    [],
+  );
 
   const closeEvidenceDrawer = useCallback(() => {
     setIsDrawerOpen(false);
@@ -180,10 +195,12 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       finalizeLivingRecipeError,
       finalizeLivingRecipeStatus,
       selectedStepId,
+      selectedIngredientId,
       selectionSource,
       isDrawerOpen,
       provenanceSelection,
       openEvidenceDrawer,
+      openIngredientEvidenceDrawer,
       closeEvidenceDrawer,
     }),
     [
@@ -195,6 +212,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       questionsById,
       followUpAnswersState,
       selectedStepId,
+      selectedIngredientId,
       selectionSource,
       isDrawerOpen,
       provenanceSelection,
@@ -203,6 +221,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       finalizeLivingRecipeError,
       finalizeLivingRecipeStatus,
       openEvidenceDrawer,
+      openIngredientEvidenceDrawer,
       closeEvidenceDrawer,
       setFollowUpAnswers,
     ],

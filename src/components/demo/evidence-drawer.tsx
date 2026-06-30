@@ -7,26 +7,36 @@ import type {
   AppliedStepAnswer,
   ProvenanceSelectionSource,
 } from "@/src/lib/recipe/provenance-selection";
-import type { OpenQuestion, ProvenanceLink, RecipeStep, TranscriptSegment } from "@/src/lib/recipe/types";
+import type {
+  Ingredient,
+  OpenQuestion,
+  ProvenanceLink,
+  RecipeStep,
+  TranscriptSegment,
+} from "@/src/lib/recipe/types";
 
 import { useDemo } from "./demo-provider";
 
 type EvidenceDrawerProps = {
   step: RecipeStep | null;
+  ingredient: Ingredient | null;
   selectionSource: ProvenanceSelectionSource | null;
   segmentsById: Map<string, TranscriptSegment>;
   appliedAnswers: AppliedStepAnswer[];
   unresolvedForStep: OpenQuestion[];
+  unresolvedForIngredient: OpenQuestion[];
   isOpen: boolean;
   onClose: () => void;
 };
 
 export function EvidenceDrawer({
   step,
+  ingredient,
   selectionSource,
   segmentsById,
   appliedAnswers,
   unresolvedForStep,
+  unresolvedForIngredient,
   isOpen,
   onClose,
 }: EvidenceDrawerProps) {
@@ -34,7 +44,19 @@ export function EvidenceDrawer({
     return null;
   }
 
-  const stepLabel = selectionSource === "living" ? "Selected final step" : "Selected step";
+  const selectedItem = step ?? ingredient;
+  const isIngredient = ingredient !== null && step === null;
+  const itemLabel = isIngredient
+    ? selectionSource === "living"
+      ? "Selected final ingredient"
+      : "Selected ingredient"
+    : selectionSource === "living"
+      ? "Selected final step"
+      : "Selected step";
+  const unresolvedQuestions = isIngredient ? unresolvedForIngredient : unresolvedForStep;
+  const unresolvedLabel = isIngredient
+    ? "Still unresolved for this ingredient"
+    : "Still unresolved for this step";
 
   return (
     <>
@@ -71,22 +93,34 @@ export function EvidenceDrawer({
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-5">
-          {!step ? (
-            <p className="text-sm text-stone-500">Select a step to view evidence.</p>
+          {!selectedItem ? (
+            <p className="text-sm text-stone-500">Select a step or ingredient to view evidence.</p>
           ) : (
             <>
-              <h3 className="text-lg font-semibold text-stone-900">{stepLabel}</h3>
-              <p className="mt-3 rounded-xl border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-relaxed text-stone-800">
-                {step.instruction}
-              </p>
+              <h3 className="text-lg font-semibold text-stone-900">{itemLabel}</h3>
+              {isIngredient && ingredient ? (
+                <p className="mt-3 rounded-xl border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-relaxed text-stone-800">
+                  <span className="font-medium">{ingredient.name}</span>
+                  {ingredient.quantity ? (
+                    <span className="text-stone-600"> — {ingredient.quantity}</span>
+                  ) : null}
+                  {ingredient.preparation ? (
+                    <span className="text-stone-500"> ({ingredient.preparation})</span>
+                  ) : null}
+                </p>
+              ) : step ? (
+                <p className="mt-3 rounded-xl border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-relaxed text-stone-800">
+                  {step.instruction}
+                </p>
+              ) : null}
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <DetailBadge tone="source">Source-backed</DetailBadge>
-                {step.isInferred ? <DetailBadge tone="inferred">Inferred</DetailBadge> : null}
+                {selectedItem.isInferred ? <DetailBadge tone="inferred">Inferred</DetailBadge> : null}
                 {appliedAnswers.length > 0 ? (
                   <DetailBadge tone="answered">User-answered</DetailBadge>
                 ) : null}
-                {unresolvedForStep.length > 0 ? (
+                {unresolvedQuestions.length > 0 ? (
                   <DetailBadge tone="unresolved">Unresolved</DetailBadge>
                 ) : null}
               </div>
@@ -113,21 +147,26 @@ export function EvidenceDrawer({
                 <p className="text-xs font-medium uppercase tracking-wider text-amber-700">
                   Transcript evidence
                 </p>
-                {step.provenance.map((link, index) => (
+                {selectedItem.provenance.map((link, index) => (
                   <EvidenceItem
                     key={`${link.transcriptSegmentId}-${index}`}
                     link={link}
                     segment={segmentsById.get(link.transcriptSegmentId)}
+                    supportLabel={
+                      isIngredient
+                        ? "Why it supports this ingredient: "
+                        : "Why it supports this step: "
+                    }
                   />
                 ))}
               </div>
 
-              {unresolvedForStep.length > 0 ? (
+              {unresolvedQuestions.length > 0 ? (
                 <div className="mt-6 space-y-3">
                   <p className="text-xs font-medium uppercase tracking-wider text-stone-500">
-                    Still unresolved for this step
+                    {unresolvedLabel}
                   </p>
-                  {unresolvedForStep.map((question) => (
+                  {unresolvedQuestions.map((question) => (
                     <article
                       key={question.id}
                       className="rounded-xl border border-dashed border-stone-300 bg-stone-50 p-4"
@@ -166,10 +205,12 @@ export function DemoEvidenceDrawer() {
   return (
     <EvidenceDrawer
       step={provenanceSelection.step}
+      ingredient={provenanceSelection.ingredient}
       selectionSource={selectionSource}
       segmentsById={segmentsById}
       appliedAnswers={provenanceSelection.appliedAnswers}
       unresolvedForStep={provenanceSelection.unresolvedForStep}
+      unresolvedForIngredient={provenanceSelection.unresolvedForIngredient}
       isOpen={isDrawerOpen}
       onClose={closeEvidenceDrawer}
     />
@@ -179,9 +220,11 @@ export function DemoEvidenceDrawer() {
 function EvidenceItem({
   link,
   segment,
+  supportLabel = "Why it supports this step: ",
 }: {
   link: ProvenanceLink;
   segment: TranscriptSegment | undefined;
+  supportLabel?: string;
 }) {
   return (
     <article className="rounded-xl border border-stone-100 bg-stone-50/80 p-4">
@@ -210,7 +253,7 @@ function EvidenceItem({
 
       {link.reason ? (
         <p className="mt-3 text-sm leading-relaxed text-stone-600">
-          <span className="font-medium text-stone-700">Why it supports this step: </span>
+          <span className="font-medium text-stone-700">{supportLabel}</span>
           {link.reason}
         </p>
       ) : null}

@@ -96,7 +96,7 @@ export function TraceableStepList({
   );
 }
 
-function StepBadge({
+export function StepBadge({
   label,
   tone,
 }: {

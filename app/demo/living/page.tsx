@@ -8,7 +8,9 @@ export default function LivingPage() {
     livingRecipe,
     questionsById,
     openEvidenceDrawer,
+    openIngredientEvidenceDrawer,
     selectedStepId,
+    selectedIngredientId,
     selectionSource,
     finalizeLivingRecipe,
     isFinalizingLivingRecipe,
@@ -24,8 +26,8 @@ export default function LivingPage() {
           <p className="text-sm font-medium uppercase tracking-wider text-amber-700">Step 4</p>
           <h1 className="mt-1 text-3xl font-semibold text-stone-900">Living recipe</h1>
           <p className="mt-2 text-sm leading-relaxed text-stone-600">
-            The final recipe combines source-backed steps with your follow-up answers. Click any step
-            to trace it in the evidence drawer.
+            The final recipe combines source-backed steps and ingredients with your follow-up
+            answers. Click any step or ingredient to trace it in the evidence drawer.
           </p>
         </div>
 
@@ -56,6 +58,8 @@ export default function LivingPage() {
         questionsById={questionsById}
         selectedStepId={selectionSource === "living" ? selectedStepId : null}
         onStepSelect={(stepId) => openEvidenceDrawer(stepId, "living")}
+        selectedIngredientId={selectionSource === "living" ? selectedIngredientId : null}
+        onIngredientSelect={(ingredientId) => openIngredientEvidenceDrawer(ingredientId, "living")}
       />
     </div>
   );

@@ -2,11 +2,17 @@
 
 import type { LivingRecipe, OpenQuestion, SensoryCue } from "@/src/lib/recipe/types";
 import {
+  getAppliedAnswersForIngredient,
+  ingredientHasAppliedAnswers,
+  ingredientHasSourceEvidence,
+  ingredientHasUnresolvedDetails,
+  ingredientIsTraceable,
   stepHasAppliedAnswers,
   stepHasUnresolvedDetails,
 } from "@/src/lib/recipe/provenance-selection";
 
 import { useDemo } from "./demo-provider";
+import { TraceableIngredientList } from "./traceable-ingredient-list";
 import { TraceableStepList } from "./traceable-step-list";
 
 type LivingRecipePanelProps = {
@@ -14,6 +20,8 @@ type LivingRecipePanelProps = {
   questionsById: Map<string, OpenQuestion>;
   selectedStepId?: string | null;
   onStepSelect?: (stepId: string) => void;
+  selectedIngredientId?: string | null;
+  onIngredientSelect?: (ingredientId: string) => void;
 };
 
 export function LivingRecipePanel({
@@ -21,12 +29,15 @@ export function LivingRecipePanel({
   questionsById,
   selectedStepId: selectedStepIdProp,
   onStepSelect: onStepSelectProp,
+  selectedIngredientId: selectedIngredientIdProp,
+  onIngredientSelect: onIngredientSelectProp,
 }: LivingRecipePanelProps) {
   const { selectedStepId, selectionSource, openEvidenceDrawer } = useDemo();
   const activeStepId =
     selectedStepIdProp ?? (selectionSource === "living" ? selectedStepId : null);
   const handleStepSelect =
     onStepSelectProp ?? ((stepId: string) => openEvidenceDrawer(stepId, "living"));
+  const openQuestions = [...questionsById.values()];
   const cuesByType = groupSensoryCuesByType(recipe.sensoryCues);
 
   return (
@@ -57,7 +68,14 @@ export function LivingRecipePanel({
       <Legend />
 
       <div className="mt-8 space-y-8">
-        <IngredientsSection ingredients={recipe.ingredients} />
+        <IngredientsSection
+          ingredients={recipe.ingredients}
+          resolvedQuestions={recipe.resolvedQuestions}
+          unresolvedQuestions={recipe.unresolvedQuestions}
+          openQuestions={openQuestions}
+          selectedIngredientId={selectedIngredientIdProp ?? null}
+          onIngredientSelect={onIngredientSelectProp}
+        />
         <section>
           <SectionHeading
             title="Steps"
@@ -132,31 +150,64 @@ function LegendItem({
 
 function IngredientsSection({
   ingredients,
+  resolvedQuestions,
+  unresolvedQuestions,
+  openQuestions,
+  selectedIngredientId,
+  onIngredientSelect,
 }: {
   ingredients: LivingRecipe["ingredients"];
+  resolvedQuestions: LivingRecipe["resolvedQuestions"];
+  unresolvedQuestions: LivingRecipe["unresolvedQuestions"];
+  openQuestions: OpenQuestion[];
+  selectedIngredientId: string | null;
+  onIngredientSelect?: (ingredientId: string) => void;
 }) {
   return (
     <section>
-      <SectionHeading title="Ingredients" badge="Source-backed" badgeTone="source" />
-      <ul className="mt-4 space-y-2">
-        {ingredients.map((ingredient) => (
-          <li
-            key={ingredient.id}
-            className="flex flex-wrap items-start gap-2 rounded-xl border border-amber-100 bg-amber-50/30 px-4 py-3 text-sm text-stone-800"
-          >
-            <SourceBadge />
-            <span>
-              <span className="font-medium">{ingredient.name}</span>
-              {ingredient.quantity ? (
-                <span className="text-stone-600"> — {ingredient.quantity}</span>
-              ) : null}
-              {ingredient.preparation ? (
-                <span className="text-stone-500"> ({ingredient.preparation})</span>
-              ) : null}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <SectionHeading
+        title="Ingredients"
+        badge={
+          onIngredientSelect
+            ? "Click to trace · source / answered / unresolved"
+            : "Source-backed"
+        }
+        badgeTone="source"
+      />
+      <TraceableIngredientList
+        ingredients={ingredients}
+        selectedIngredientId={selectedIngredientId}
+        onIngredientSelect={onIngredientSelect}
+        hint={onIngredientSelect ? "Click an ingredient to open source evidence." : undefined}
+        getIngredientMeta={(ingredient) => {
+          const showAnsweredBadge = ingredientHasAppliedAnswers(
+            ingredient.id,
+            resolvedQuestions,
+            openQuestions,
+          );
+
+          return {
+            showSourceBadge: ingredientHasSourceEvidence(ingredient),
+            showInferredBadge: ingredient.isInferred,
+            showAnsweredBadge,
+            showUnresolvedBadge: ingredientHasUnresolvedDetails(
+              ingredient.id,
+              unresolvedQuestions,
+            ),
+            appliedAnswers: getAppliedAnswersForIngredient(
+              ingredient.id,
+              resolvedQuestions,
+              openQuestions,
+            ),
+            isTraceable: ingredientIsTraceable(
+              ingredient,
+              resolvedQuestions,
+              unresolvedQuestions,
+              openQuestions,
+            ),
+          };
+        }}
+      />
     </section>
   );
 }

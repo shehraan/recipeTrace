@@ -110,7 +110,7 @@ export async function POST(request: Request) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: process.env.OPENAI_FINALIZE_MODEL ?? "gpt-5.5",
+      model: process.env.OPENAI_FINALIZE_MODEL ?? "gpt-5.4-mini",
       response_format: { type: "json_object" },
       messages: [
         {
