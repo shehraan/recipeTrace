@@ -12,9 +12,6 @@ export default function LivingPage() {
     selectedStepId,
     selectedIngredientId,
     selectionSource,
-    finalizeLivingRecipe,
-    isFinalizingLivingRecipe,
-    finalizeLivingRecipeError,
     finalizeLivingRecipeStatus,
   } = useDemo();
   const showDebugStatus = process.env.NODE_ENV !== "production";
@@ -31,26 +28,11 @@ export default function LivingPage() {
           </p>
         </div>
 
-        <div className="flex flex-col items-start gap-2 sm:items-end">
-          <button
-            type="button"
-            onClick={finalizeLivingRecipe}
-            disabled={isFinalizingLivingRecipe}
-            className="rounded-full bg-amber-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-800 disabled:cursor-not-allowed disabled:bg-stone-300"
-          >
-            {isFinalizingLivingRecipe ? "Generating..." : "Generate living recipe"}
-          </button>
-          {finalizeLivingRecipeError ? (
-            <p className="max-w-sm text-sm leading-relaxed text-amber-800">
-              {finalizeLivingRecipeError}
-            </p>
-          ) : null}
-          {showDebugStatus ? (
-            <p className="max-w-sm rounded-full bg-stone-100 px-3 py-1 text-xs font-medium text-stone-600">
-              {finalizeLivingRecipeStatus}
-            </p>
-          ) : null}
-        </div>
+        {showDebugStatus ? (
+          <p className="rounded-full bg-stone-100 px-3 py-1 text-xs font-medium text-stone-600">
+            {finalizeLivingRecipeStatus}
+          </p>
+        ) : null}
       </div>
 
       <LivingRecipePanel

@@ -1,12 +1,31 @@
 "use client";
 
-import { DemoContinueLink } from "@/src/components/demo/demo-continue-link";
+import { useRouter } from "next/navigation";
+
 import { useDemo } from "@/src/components/demo/demo-provider";
 import { FollowUpQuestionsPanel } from "@/src/components/demo/follow-up-questions-panel";
 
 export default function FollowupsPage() {
-  const { recipeDraft, followUpAnswers, setFollowUpAnswers } = useDemo();
+  const {
+    recipeDraft,
+    followUpAnswers,
+    setFollowUpAnswers,
+    finalizeLivingRecipe,
+    isFinalizingLivingRecipe,
+    finalizeLivingRecipeError,
+    finalizeLivingRecipeStatus,
+  } = useDemo();
+  const router = useRouter();
   const answeredCount = Object.keys(followUpAnswers).length;
+  const showDebugStatus = process.env.NODE_ENV !== "production";
+
+  const handleGenerateLivingRecipe = async () => {
+    const generated = await finalizeLivingRecipe();
+
+    if (generated) {
+      router.push("/demo/living");
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -25,15 +44,32 @@ export default function FollowupsPage() {
         onAnswersChange={setFollowUpAnswers}
       />
 
-      <DemoContinueLink
-        href="/demo/living"
-        label="Generate living recipe"
-        description={
-          answeredCount > 0
+      <div className="mt-8 flex flex-wrap items-center gap-4 border-t border-stone-200 pt-6">
+        <button
+          type="button"
+          onClick={handleGenerateLivingRecipe}
+          disabled={isFinalizingLivingRecipe}
+          className="inline-flex items-center justify-center rounded-full bg-amber-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-stone-300"
+        >
+          {isFinalizingLivingRecipe ? "Generating..." : "Generate living recipe"}
+        </button>
+        <p className="text-sm text-stone-500">
+          {answeredCount > 0
             ? `${answeredCount} answer${answeredCount === 1 ? "" : "s"} will be included.`
-            : "You can continue without answers - unresolved details stay explicit."
-        }
-      />
+            : "You can generate without answers — unresolved details stay explicit."}
+        </p>
+      </div>
+
+      {finalizeLivingRecipeError ? (
+        <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-800">
+          {finalizeLivingRecipeError}
+        </p>
+      ) : null}
+      {showDebugStatus ? (
+        <p className="rounded-full bg-stone-100 px-3 py-1 text-xs font-medium text-stone-600">
+          {finalizeLivingRecipeStatus}
+        </p>
+      ) : null}
     </div>
   );
 }

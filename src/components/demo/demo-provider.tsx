@@ -32,7 +32,7 @@ type DemoContextValue = {
   isExtractingRecipeDraft: boolean;
   extractRecipeDraftError: string | null;
   extractRecipeDraftStatus: string;
-  finalizeLivingRecipe: () => Promise<void>;
+  finalizeLivingRecipe: () => Promise<boolean>;
   isFinalizingLivingRecipe: boolean;
   finalizeLivingRecipeError: string | null;
   finalizeLivingRecipeStatus: string;
@@ -193,9 +193,9 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         if (process.env.NODE_ENV !== "production") {
           console.warn("[RecipeTrace] AI finalization failed", payload);
         }
-        setFinalizeLivingRecipeError(`${message} Showing the local living recipe instead.`);
+        setFinalizeLivingRecipeError(message);
         setFinalizeLivingRecipeStatus(`AI failed validation: ${message}`);
-        return;
+        return false;
       }
 
       if (
@@ -208,23 +208,26 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         if (process.env.NODE_ENV !== "production") {
           console.info("[RecipeTrace] AI finalization succeeded", payload);
         }
-      } else {
-        if (process.env.NODE_ENV !== "production") {
-          console.warn("[RecipeTrace] AI finalization response missing livingRecipe", payload);
-        }
-        setFinalizeLivingRecipeError(
-          "The finalization response was missing a living recipe. Showing the local living recipe instead.",
-        );
-        setFinalizeLivingRecipeStatus("Using local fallback");
+        return true;
       }
+
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[RecipeTrace] AI finalization response missing livingRecipe", payload);
+      }
+      setFinalizeLivingRecipeError(
+        "The finalization response was missing a living recipe.",
+      );
+      setFinalizeLivingRecipeStatus("Using local fallback");
+      return false;
     } catch {
       setFinalizeLivingRecipeError(
-        "Unable to reach the finalization route. Showing the local living recipe instead.",
+        "Unable to reach the finalization route. Check the dev server and try again.",
       );
       setFinalizeLivingRecipeStatus("Using local fallback");
       if (process.env.NODE_ENV !== "production") {
         console.warn("[RecipeTrace] AI finalization request failed");
       }
+      return false;
     } finally {
       setIsFinalizingLivingRecipe(false);
     }
