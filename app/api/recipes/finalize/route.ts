@@ -55,9 +55,15 @@ Preserve uncertainty when still unresolved.
 Every final step must keep provenance from the draft step.
 User answers should be labeled as user-provided, not transcript-backed.
 Every resolved question must preserve appliedToStepIds and appliedToIngredientIds from the original open question relationship fields.
+Match the LivingRecipe schema exactly. Use these top-level fields only: id, captureId, title, summary, familyContext, ingredients, steps, sensoryCues, resolvedQuestions, unresolvedQuestions, sourceSummary, createdAt.
+Use unresolvedQuestions, not openQuestions or followUpQuestions.
+Use transcriptSegmentId in every provenance link, not transcript_span_ids or transcriptSegmentIds.
+Use only these enum values: confidence and priority are low, medium, or high; sensory cue type is look, smell, sound, texture, timing, or temperature; question target is ingredient, step, timing, temperature, texture, serving, or context.
+Use [] for empty arrays.
 
 Rewrite the final LivingRecipe only. Do not return a RecipeDraft.
 Your primary job is to rewrite final step instructions naturally using user answers when safe.
+Use fallbackLivingRecipe as the structural base. Do not add, remove, or rename ingredients, steps, sensory cues, questions, ids, sourceSummary fields, or provenance links.
 For every user answer whose open question has relatedStepIds, edit the related final step instruction to include the answered detail when the answer is direct and cookable.
 If a resolved question has relatedStepIds, incorporate the answer into at least one related final step instruction when safe, and into every related step where the answer directly changes that cooking action.
 Example: if the original step says "Cook sliced onions in oil until the edges are golden" and the user answered heat level "high", return "Cook sliced onions in oil over high heat until the edges are golden."
@@ -65,6 +71,7 @@ Do not leave a direct step answer only in resolvedQuestions.
 Never put the answer only in an evidence drawer or note if it directly changes a cooking instruction.
 Never replace a step with follow-up question text.
 Preserve provenance from each draft step exactly on the corresponding final step.
+If an answer applies to an ingredient but cannot be represented safely on the ingredient without transcript provenance, keep the ingredient unchanged and preserve the answer in resolvedQuestions with appliedToIngredientIds.
 If an answer is ambiguous, keep the original step and start the resolvedQuestions answer with "Ambiguous user-provided note:" followed by the answer.
 Return strict JSON only.`;
 
@@ -74,6 +81,9 @@ Do not invent missing details.
 Repair only fields identified by the validation errors.
 Preserve all ids, ordering, ingredients, sensory cues, provenance links, sourceSummary counts, questionId values, and user answer text.
 Every resolved question must preserve appliedToStepIds and appliedToIngredientIds from the original open question relationship fields.
+Use unresolvedQuestions, not openQuestions or followUpQuestions.
+Use transcriptSegmentId in provenance links.
+Do not add user-provided ingredients or transcript provenance for user answers; keep user details in resolvedQuestions unless they safely rewrite an existing step instruction.
 When validation says a direct answer was not incorporated into a related final step, rewrite that step instruction naturally to include the exact user answer when safe.
 Never replace a step with the follow-up question text.
 Never put a direct cooking answer only in resolvedQuestions or notes.
@@ -180,21 +190,47 @@ export async function POST(request: Request) {
     ]);
   }
 
-  const livingRecipeResult = livingRecipeSchema.safeParse(
-    normalizeLivingRecipeResponse(modelJson, recipeDraft, followUpAnswers),
+  const normalizedModelJson = normalizeLivingRecipeResponse(
+    modelJson,
+    recipeDraft,
+    followUpAnswers,
+    fallbackLivingRecipe,
   );
+  const livingRecipeResult = livingRecipeSchema.safeParse(normalizedModelJson);
 
   if (!livingRecipeResult.success) {
+    const schemaErrors = formatZodIssues(livingRecipeResult.error);
     devLog("Validation errors", {
       stage: "schema",
-      errors: formatZodIssues(livingRecipeResult.error),
+      errors: schemaErrors,
     });
-    return validationError(
-      "LivingRecipe failed schema validation.",
-      formatZodIssues(livingRecipeResult.error),
-    );
+    devLog("First finalization attempt failed", { stage: "schema" });
+    devLog("Repair pass ran", { reason: "schema validation failed" });
+
+    const repairResult = await repairLivingRecipe({
+      apiKey,
+      failedLivingRecipe: normalizedModelJson,
+      validationErrors: schemaErrors,
+      recipeDraft,
+      transcriptSegments,
+      followUpAnswers,
+      fallbackLivingRecipe,
+    });
+
+    if (repairResult.ok) {
+      devLog("Repair attempt passed", { stage: "schema" });
+      return NextResponse.json({
+        livingRecipe: repairResult.livingRecipe,
+        validation: { ok: true, firstAttemptPassed: false, repairRan: true },
+      });
+    }
+
+    devLog("Repair attempt failed", { stage: "schema", errors: repairResult.errors });
+    devLog("Fallback used", { reason: repairResult.message });
+    return validationError(repairResult.message, repairResult.errors);
   }
 
+  devLog("First finalization attempt passed schema");
   devLog("Resolved questions before validation", {
     resolvedQuestions: livingRecipeResult.data.resolvedQuestions,
   });
@@ -208,42 +244,42 @@ export async function POST(request: Request) {
 
   if (guardrailErrors.length > 0) {
     devLog("Validation errors", { stage: "guardrail", errors: guardrailErrors });
+    devLog("First finalization attempt failed", { stage: "guardrail" });
 
-    if (shouldRunRepairPass(guardrailErrors)) {
-      devLog("Repair pass ran", { reason: "direct answers were not incorporated" });
-      const repairResult = await repairLivingRecipe({
-        apiKey,
-        failedLivingRecipe: livingRecipeResult.data,
-        validationErrors: guardrailErrors,
-        recipeDraft,
-        transcriptSegments,
-        followUpAnswers,
-        fallbackLivingRecipe,
+    devLog("Repair pass ran", { reason: "guardrail validation failed" });
+    const repairResult = await repairLivingRecipe({
+      apiKey,
+      failedLivingRecipe: livingRecipeResult.data,
+      validationErrors: guardrailErrors,
+      recipeDraft,
+      transcriptSegments,
+      followUpAnswers,
+      fallbackLivingRecipe,
+    });
+
+    if (repairResult.ok) {
+      devLog("Repair attempt passed", { stage: "guardrail" });
+      return NextResponse.json({
+        livingRecipe: repairResult.livingRecipe,
+        validation: { ok: true, firstAttemptPassed: false, repairRan: true },
       });
-
-      if (repairResult.ok) {
-        return NextResponse.json({
-          livingRecipe: repairResult.livingRecipe,
-          validation: { ok: true, repairRan: true },
-        });
-      }
-
-      devLog("Validation errors", {
-        stage: "repair",
-        errors: repairResult.errors,
-      });
-      return validationError(repairResult.message, repairResult.errors);
     }
 
-    devLog("Repair pass skipped", { reason: "validation errors were not answer incorporation failures" });
-    return validationError("LivingRecipe failed finalization validation.", guardrailErrors);
+    devLog("Validation errors", {
+      stage: "repair",
+      errors: repairResult.errors,
+    });
+    devLog("Repair attempt failed", { stage: "guardrail", errors: repairResult.errors });
+    devLog("Fallback used", { reason: repairResult.message });
+    return validationError(repairResult.message, repairResult.errors);
   }
 
+  devLog("First finalization attempt passed");
   devLog("Repair pass skipped", { reason: "initial finalization passed validation" });
 
   return NextResponse.json({
     livingRecipe: livingRecipeResult.data,
-    validation: { ok: true },
+    validation: { ok: true, firstAttemptPassed: true, repairRan: false },
   });
 }
 
@@ -277,7 +313,7 @@ async function repairLivingRecipe({
   fallbackLivingRecipe,
 }: {
   apiKey: string;
-  failedLivingRecipe: LivingRecipe;
+  failedLivingRecipe: unknown;
   validationErrors: ValidationDetail[];
   recipeDraft: RecipeDraft;
   transcriptSegments: z.infer<typeof transcriptSegmentSchema>[];
@@ -351,7 +387,7 @@ async function repairLivingRecipe({
   }
 
   const livingRecipeResult = livingRecipeSchema.safeParse(
-    normalizeLivingRecipeResponse(modelJson, recipeDraft, followUpAnswers),
+    normalizeLivingRecipeResponse(modelJson, recipeDraft, followUpAnswers, fallbackLivingRecipe),
   );
 
   if (!livingRecipeResult.success) {
@@ -435,6 +471,7 @@ function normalizeLivingRecipeResponse(
   value: unknown,
   recipeDraft: RecipeDraft,
   followUpAnswers: Record<string, FollowUpAnswer>,
+  fallbackLivingRecipe: LivingRecipe,
 ): unknown {
   const candidate = isRecord(value) && isRecord(value.livingRecipe) ? value.livingRecipe : value;
 
@@ -442,38 +479,94 @@ function normalizeLivingRecipeResponse(
     return candidate;
   }
 
-  const next: Record<string, unknown> = { ...candidate };
+  const next: Record<string, unknown> = {
+    id: fallbackLivingRecipe.id,
+    captureId: fallbackLivingRecipe.captureId,
+    title: firstNonEmptyString(candidate.title, fallbackLivingRecipe.title),
+    summary: firstNonEmptyString(candidate.summary, fallbackLivingRecipe.summary),
+    familyContext: firstNonEmptyString(candidate.familyContext, fallbackLivingRecipe.familyContext),
+    createdAt: firstNonEmptyString(candidate.createdAt, fallbackLivingRecipe.createdAt),
+    sourceSummary: fallbackLivingRecipe.sourceSummary,
+  };
 
-  if (!Array.isArray(next.unresolvedQuestions)) {
-    next.unresolvedQuestions = Array.isArray(next.openQuestions)
-      ? next.openQuestions
-      : next.followUpQuestions;
-  }
-
-  delete next.openQuestions;
-  delete next.followUpQuestions;
-  delete next.follow_up_questions;
-
+  next.ingredients = normalizeLivingIngredients(fallbackLivingRecipe);
+  next.steps = normalizeLivingSteps(candidate.steps, fallbackLivingRecipe);
+  next.sensoryCues = normalizeLivingSensoryCues(fallbackLivingRecipe);
   next.resolvedQuestions = normalizeResolvedQuestions(
-    next.resolvedQuestions,
+    candidate.resolvedQuestions,
     recipeDraft,
     followUpAnswers,
+    fallbackLivingRecipe,
   );
-
-  next.ingredients = normalizeProvenanceOwners(
-    next.ingredients,
-    new Map(recipeDraft.ingredients.map((ingredient) => [ingredient.id, ingredient.provenance])),
-  );
-  next.steps = normalizeProvenanceOwners(
-    next.steps,
-    new Map(recipeDraft.steps.map((step) => [step.id, step.provenance])),
-  );
-  next.sensoryCues = normalizeProvenanceOwners(
-    next.sensoryCues,
-    new Map(recipeDraft.sensoryCues.map((cue) => [cue.id, cue.provenance])),
-  );
+  next.unresolvedQuestions = fallbackLivingRecipe.unresolvedQuestions;
 
   return next;
+}
+
+function normalizeLivingIngredients(fallbackLivingRecipe: LivingRecipe) {
+  return fallbackLivingRecipe.ingredients;
+}
+
+function normalizeLivingSteps(
+  value: unknown,
+  fallbackLivingRecipe: LivingRecipe,
+) {
+  const candidatesById = recordArrayById(value);
+
+  return fallbackLivingRecipe.steps.map((fallbackStep) => {
+    const candidate = candidatesById.get(fallbackStep.id);
+
+    if (!candidate) {
+      return fallbackStep;
+    }
+
+    return {
+      ...fallbackStep,
+      instruction: firstNonEmptyString(
+        candidate.instruction,
+        candidate.text,
+        fallbackStep.instruction,
+      ),
+      timing: fallbackStep.timing,
+      temperature: fallbackStep.temperature,
+      sensoryCueIds: fallbackStep.sensoryCueIds,
+      isInferred: fallbackStep.isInferred,
+      confidence: fallbackStep.confidence,
+      provenance: fallbackStep.provenance,
+    };
+  });
+}
+
+function normalizeLivingSensoryCues(fallbackLivingRecipe: LivingRecipe) {
+  return fallbackLivingRecipe.sensoryCues;
+}
+
+function recordArrayById(value: unknown) {
+  return new Map(
+    (Array.isArray(value) ? value : [])
+      .filter(isRecord)
+      .flatMap((item) => (typeof item.id === "string" ? [[item.id, item] as const] : [])),
+  );
+}
+
+function firstNonEmptyString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeUserProvidedAnswer(candidateAnswer: string | undefined, submittedAnswer: string) {
+  const answer = candidateAnswer?.includes(submittedAnswer) ? candidateAnswer : submittedAnswer;
+
+  if (isAmbiguousResolvedAnswer(answer) || /\buser-provided\b/i.test(answer)) {
+    return answer;
+  }
+
+  return `User-provided: ${answer}`;
 }
 
 function normalizeOpenQuestionRelationshipAliases(value: unknown): unknown {
@@ -519,48 +612,33 @@ function normalizeResolvedQuestions(
   value: unknown,
   recipeDraft: RecipeDraft,
   followUpAnswers: Record<string, FollowUpAnswer>,
+  fallbackLivingRecipe: LivingRecipe,
 ): unknown {
-  if (!Array.isArray(value)) {
-    return value;
-  }
-
   const draftQuestionsById = new Map(recipeDraft.openQuestions.map((question) => [question.id, question]));
+  const candidatesByQuestionId = new Map(
+    (Array.isArray(value) ? value : [])
+      .filter(isRecord)
+      .flatMap((entry) =>
+        typeof entry.questionId === "string" ? [[entry.questionId, entry] as const] : [],
+      ),
+  );
 
-  return value.map((entry) => {
-    if (!isRecord(entry)) {
-      return entry;
-    }
-
-    const next: Record<string, unknown> = { ...entry };
-    const questionId = typeof next.questionId === "string" ? next.questionId : undefined;
-    const draftQuestion = questionId ? draftQuestionsById.get(questionId) : undefined;
-    const answer = questionId ? followUpAnswers[questionId]?.answer : undefined;
-
+  return fallbackLivingRecipe.resolvedQuestions.map((fallbackEntry) => {
+    const questionId = fallbackEntry.questionId;
+    const candidate = candidatesByQuestionId.get(questionId);
+    const draftQuestion = draftQuestionsById.get(questionId);
+    const submittedAnswer = followUpAnswers[questionId]?.answer;
+    const candidateAnswer = firstNonEmptyString(candidate?.answer);
+    const answer = normalizeUserProvidedAnswer(candidateAnswer, submittedAnswer ?? fallbackEntry.answer);
     const draftStepIds = draftQuestion ? getQuestionStepIds(draftQuestion) : undefined;
     const draftIngredientIds = draftQuestion ? getQuestionIngredientIds(draftQuestion) : undefined;
 
-    if (
-      draftStepIds?.length &&
-      !haveSameStringValues(getStringArray(next.appliedToStepIds), draftStepIds)
-    ) {
-      next.appliedToStepIds = draftStepIds;
-    }
-
-    if (
-      draftIngredientIds?.length &&
-      !haveSameStringValues(getStringArray(next.appliedToIngredientIds), draftIngredientIds)
-    ) {
-      next.appliedToIngredientIds = draftIngredientIds;
-    }
-
-    if (answer && (typeof next.answer !== "string" || !next.answer.includes(answer))) {
-      next.answer =
-        typeof next.answer === "string" && next.answer.trim()
-          ? `${next.answer.trim()} User answer: ${answer}`
-          : answer;
-    }
-
-    return next;
+    return {
+      questionId,
+      answer,
+      appliedToStepIds: draftStepIds ?? fallbackEntry.appliedToStepIds ?? [],
+      appliedToIngredientIds: draftIngredientIds ?? fallbackEntry.appliedToIngredientIds ?? [],
+    };
   });
 }
 
@@ -921,18 +999,6 @@ function getQuestionIngredientIds(question: RecipeDraft["openQuestions"][number]
   );
 }
 
-function shouldRunRepairPass(errors: ValidationDetail[]) {
-  return errors.length > 0 && errors.every(isAnswerIncorporationError);
-}
-
-function isAnswerIncorporationError(error: ValidationDetail) {
-  return (
-    error.path.startsWith("steps.") &&
-    error.path.endsWith(".instruction") &&
-    error.message.startsWith("Direct answer for ")
-  );
-}
-
 function isDirectStepAnswer(target: RecipeDraft["openQuestions"][number]["target"], answer: string) {
   if (!["step", "timing", "temperature", "texture"].includes(target)) {
     return false;
@@ -1010,7 +1076,7 @@ function buildFinalizationRepairPrompt({
   transcriptSegments,
   followUpAnswers,
 }: {
-  failedLivingRecipe: LivingRecipe;
+  failedLivingRecipe: unknown;
   validationErrors: ValidationDetail[];
   recipeDraft: RecipeDraft;
   transcriptSegments: z.infer<typeof transcriptSegmentSchema>[];
@@ -1044,7 +1110,7 @@ function devLog(message: string, details?: Record<string, unknown>) {
   }
 
   if (details) {
-    console.info(`[RecipeTrace] ${message}`, details);
+    console.info(`[RecipeTrace] ${message}`, JSON.stringify(details, null, 2));
   } else {
     console.info(`[RecipeTrace] ${message}`);
   }
@@ -1052,9 +1118,10 @@ function devLog(message: string, details?: Record<string, unknown>) {
 
 function validationError(message: string, details: ValidationDetail[]) {
   if (process.env.NODE_ENV !== "production") {
+    devLog("Fallback used", { reason: message });
     console.warn("[RecipeTrace] Living recipe finalization validation failed", {
       message,
-      details: details.slice(0, 5),
+      details,
     });
   }
 
