@@ -22,11 +22,23 @@ export function FollowUpQuestionsPanel({
 }: FollowUpQuestionsPanelProps) {
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string>>({});
   const [saveStatus, setSaveStatus] = useState<Record<string, SaveStatus>>({});
+  const [pendingQuestionId, setPendingQuestionId] = useState<string | null>(null);
   const answersRef = useRef(answers);
+  const autosaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
     answersRef.current = answers;
   }, [answers]);
+
+  useEffect(() => {
+    const autosaveTimers = autosaveTimersRef.current;
+
+    return () => {
+      for (const timer of Object.values(autosaveTimers)) {
+        clearTimeout(timer);
+      }
+    };
+  }, []);
 
   const sortedQuestions = useMemo(
     () =>
@@ -42,6 +54,11 @@ export function FollowUpQuestionsPanel({
         (a, b) => a.answeredAt.localeCompare(b.answeredAt),
       ),
     [answers],
+  );
+
+  const questionsById = useMemo(
+    () => new Map(questions.map((question) => [question.id, question])),
+    [questions],
   );
 
   const persistAnswer = useCallback((questionId: string, rawAnswer: string) => {
@@ -72,34 +89,68 @@ export function FollowUpQuestionsPanel({
   }, [onAnswersChange]);
 
   useEffect(() => {
-    const timers: ReturnType<typeof setTimeout>[] = [];
-
-    for (const question of questions) {
-      const questionId = question.id;
-      const draft =
-        draftAnswers[questionId] ?? answersRef.current[questionId]?.answer ?? "";
-
-      const timer = setTimeout(() => {
-        const trimmed = draft.trim();
-        if (!trimmed) {
-          persistAnswer(questionId, draft);
-          setSaveStatus((current) => ({ ...current, [questionId]: "unanswered" }));
-          return;
-        }
-
-        persistAnswer(questionId, draft);
-        setSaveStatus((current) => ({ ...current, [questionId]: "saved" }));
-      }, AUTOSAVE_DEBOUNCE_MS);
-
-      timers.push(timer);
+    if (!pendingQuestionId || !questionsById.has(pendingQuestionId)) {
+      return;
     }
 
-    return () => {
-      for (const timer of timers) {
+    const draft =
+      draftAnswers[pendingQuestionId] ?? answersRef.current[pendingQuestionId]?.answer ?? "";
+    const existingTimer = autosaveTimersRef.current[pendingQuestionId];
+
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    autosaveTimersRef.current[pendingQuestionId] = setTimeout(() => {
+      const trimmed = draft.trim();
+      persistAnswer(pendingQuestionId, draft);
+
+      setSaveStatus((current) => ({
+        ...current,
+        [pendingQuestionId]: trimmed ? "saved" : "unanswered",
+      }));
+
+      delete autosaveTimersRef.current[pendingQuestionId];
+    }, AUTOSAVE_DEBOUNCE_MS);
+  }, [draftAnswers, pendingQuestionId, persistAnswer, questionsById]);
+
+  useEffect(() => {
+    for (const [questionId, timer] of Object.entries(autosaveTimersRef.current)) {
+      if (!questionsById.has(questionId)) {
         clearTimeout(timer);
+        delete autosaveTimersRef.current[questionId];
       }
-    };
-  }, [draftAnswers, questions, persistAnswer]);
+    }
+  }, [questionsById]);
+
+  const handleDraftChange = useCallback((questionId: string, value: string) => {
+    setDraftAnswers((current) => ({
+      ...current,
+      [questionId]: value,
+    }));
+    setSaveStatus((current) => ({
+      ...current,
+      [questionId]: value.trim() ? "typing" : "unanswered",
+    }));
+    setPendingQuestionId(questionId);
+  }, []);
+
+  const handleDraftBlur = useCallback((questionId: string) => {
+    const timer = autosaveTimersRef.current[questionId];
+
+    if (timer) {
+      clearTimeout(timer);
+      delete autosaveTimersRef.current[questionId];
+    }
+
+    const draft = draftAnswers[questionId] ?? answersRef.current[questionId]?.answer ?? "";
+    const trimmed = draft.trim();
+    persistAnswer(questionId, draft);
+    setSaveStatus((current) => ({
+      ...current,
+      [questionId]: trimmed ? "saved" : "unanswered",
+    }));
+  }, [draftAnswers, persistAnswer]);
 
   if (questions.length === 0) {
     return (
@@ -109,17 +160,6 @@ export function FollowUpQuestionsPanel({
       </section>
     );
   }
-
-  const handleDraftChange = (questionId: string, value: string) => {
-    setDraftAnswers((current) => ({
-      ...current,
-      [questionId]: value,
-    }));
-    setSaveStatus((current) => ({
-      ...current,
-      [questionId]: value.trim() ? "typing" : "unanswered",
-    }));
-  };
 
   return (
     <div className="space-y-6">
@@ -176,6 +216,7 @@ export function FollowUpQuestionsPanel({
                     id={`answer-${question.id}`}
                     value={draftAnswer}
                     onChange={(event) => handleDraftChange(question.id, event.target.value)}
+                    onBlur={() => handleDraftBlur(question.id)}
                     rows={3}
                     placeholder="Add what you know from memory or follow-up with the cook..."
                     className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm leading-relaxed text-stone-800 placeholder:text-stone-400 focus:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-200"
@@ -209,7 +250,7 @@ export function FollowUpQuestionsPanel({
 
           <ul className="mt-4 space-y-3">
             {resolvedAnswers.map((entry) => {
-              const question = questions.find((item) => item.id === entry.questionId);
+              const question = questionsById.get(entry.questionId);
               if (!question) {
                 return null;
               }
