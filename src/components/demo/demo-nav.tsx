@@ -25,7 +25,7 @@ export function DemoNav() {
             <div key={step.href} className="flex items-center gap-2">
               {index > 0 ? (
                 <span className="hidden text-stone-300 sm:inline" aria-hidden>
-                  →
+                  -&gt;
                 </span>
               ) : null}
               <Link
@@ -63,7 +63,7 @@ export function DemoHeader() {
           <span className="text-sm font-semibold tracking-tight text-stone-900">RecipeTrace</span>
         </Link>
         <span className="hidden rounded-full bg-stone-100 px-3 py-1 text-xs font-medium text-stone-600 sm:inline">
-          Seeded demo · no API keys
+          Seeded demo - no API keys
         </span>
       </div>
     </header>

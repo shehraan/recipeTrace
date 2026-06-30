@@ -102,7 +102,7 @@ export function EvidenceDrawer({
                 <p className="mt-3 rounded-xl border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-relaxed text-stone-800">
                   <span className="font-medium">{ingredient.name}</span>
                   {ingredient.quantity ? (
-                    <span className="text-stone-600"> — {ingredient.quantity}</span>
+                    <span className="text-stone-600"> - {ingredient.quantity}</span>
                   ) : null}
                   {ingredient.preparation ? (
                     <span className="text-stone-500"> ({ingredient.preparation})</span>

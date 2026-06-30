@@ -31,7 +31,7 @@ export default function FollowupsPage() {
         description={
           answeredCount > 0
             ? `${answeredCount} answer${answeredCount === 1 ? "" : "s"} will be included.`
-            : "You can continue without answers — unresolved details stay explicit."
+            : "You can continue without answers - unresolved details stay explicit."
         }
       />
     </div>

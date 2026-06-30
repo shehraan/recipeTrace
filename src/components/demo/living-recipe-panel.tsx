@@ -79,7 +79,7 @@ export function LivingRecipePanel({
         <section>
           <SectionHeading
             title="Steps"
-            badge="Click to trace · source / answered / unresolved"
+            badge="Click to trace - source / answered / unresolved"
             badgeTone="source"
           />
           <TraceableStepList
@@ -169,7 +169,7 @@ function IngredientsSection({
         title="Ingredients"
         badge={
           onIngredientSelect
-            ? "Click to trace · source / answered / unresolved"
+            ? "Click to trace - source / answered / unresolved"
             : "Source-backed"
         }
         badgeTone="source"

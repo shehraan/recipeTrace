@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { FollowUpAnswer, OpenQuestion } from "@/src/lib/recipe/types";
 
@@ -23,7 +23,10 @@ export function FollowUpQuestionsPanel({
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string>>({});
   const [saveStatus, setSaveStatus] = useState<Record<string, SaveStatus>>({});
   const answersRef = useRef(answers);
-  answersRef.current = answers;
+
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
 
   const sortedQuestions = useMemo(
     () =>
@@ -41,7 +44,7 @@ export function FollowUpQuestionsPanel({
     [answers],
   );
 
-  const persistAnswer = (questionId: string, rawAnswer: string) => {
+  const persistAnswer = useCallback((questionId: string, rawAnswer: string) => {
     const answer = rawAnswer.trim();
     const current = answersRef.current;
 
@@ -66,7 +69,7 @@ export function FollowUpQuestionsPanel({
         answeredAt: new Date().toISOString(),
       },
     });
-  };
+  }, [onAnswersChange]);
 
   useEffect(() => {
     const timers: ReturnType<typeof setTimeout>[] = [];
@@ -96,7 +99,7 @@ export function FollowUpQuestionsPanel({
         clearTimeout(timer);
       }
     };
-  }, [draftAnswers, questions, onAnswersChange]);
+  }, [draftAnswers, questions, persistAnswer]);
 
   if (questions.length === 0) {
     return (

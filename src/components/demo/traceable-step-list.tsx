@@ -81,7 +81,7 @@ export function TraceableStepList({
                         className="rounded-lg border border-emerald-100 bg-emerald-50/60 px-2 py-1 text-xs text-stone-600"
                       >
                         <span className="font-medium text-stone-800">{question.question}</span>
-                        {" — "}
+                        {" - "}
                         {answer}
                       </p>
                     ))}

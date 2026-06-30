@@ -40,6 +40,11 @@ type ValidationDetail = {
   code?: string;
 };
 
+type NormalizationWarning = {
+  path: string;
+  message: string;
+};
+
 export async function POST(request: Request) {
   logExtract("route hit");
   const apiKey = process.env.OPENAI_API_KEY;
@@ -160,7 +165,8 @@ export async function POST(request: Request) {
 
   logExtract("raw model top-level keys", objectKeys(modelJson));
 
-  const normalizedModelJson = normalizeExtractedRecipeDraft(modelJson, transcriptSegments, captureId);
+  const normalizationResult = normalizeExtractedRecipeDraft(modelJson, transcriptSegments, captureId);
+  const normalizedModelJson = normalizationResult.value;
   logExtract("normalized top-level keys", objectKeys(normalizedModelJson));
 
   const draftResult = recipeDraftSchema.safeParse(normalizedModelJson);
@@ -190,7 +196,7 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     recipeDraft: draftResult.data,
-    validation: { ok: true },
+    validation: { ok: true, warnings: normalizationResult.warnings },
   });
 }
 
@@ -260,24 +266,32 @@ function normalizeExtractedRecipeDraft(
   raw: unknown,
   transcriptSegments: TranscriptSegmentInput[],
   captureId: string,
-): unknown {
+): { value: unknown; warnings: NormalizationWarning[] } {
+  const warnings: NormalizationWarning[] = [];
+
   if (!isRecord(raw)) {
-    return raw;
+    return { value: raw, warnings };
   }
 
   const transcriptSegmentsById = new Map(transcriptSegments.map((segment) => [segment.id, segment]));
-  const ingredients = arrayFrom(firstKnown(raw, ["ingredients"])).map((ingredient, index) =>
-    normalizeIngredient(ingredient, index, transcriptSegmentsById),
+  const ingredients = arrayFrom(firstKnown(raw, ["ingredients"]), "ingredients", warnings).map(
+    (ingredient, index) =>
+      normalizeIngredient(ingredient, index, transcriptSegmentsById, `ingredients.${index}`, warnings),
   );
-  const sensoryCues = arrayFrom(firstKnown(raw, ["sensoryCues", "sensory_cues"])).map(
-    (cue, index) => normalizeSensoryCue(cue, index, transcriptSegmentsById),
+  const sensoryCues = arrayFrom(
+    firstKnown(raw, ["sensoryCues", "sensory_cues"]),
+    "sensoryCues",
+    warnings,
+  ).map(
+    (cue, index) =>
+      normalizeSensoryCue(cue, index, transcriptSegmentsById, `sensoryCues.${index}`, warnings),
   );
   const cueIdList = sensoryCues
     .map((cue) => asNonEmptyString(cue.id))
     .filter((cueId): cueId is string => Boolean(cueId));
   const cueIds = new Set(cueIdList);
-  const steps = arrayFrom(firstKnown(raw, ["steps"])).map((step, index) =>
-    normalizeStep(step, index, transcriptSegmentsById, cueIds),
+  const steps = arrayFrom(firstKnown(raw, ["steps"]), "steps", warnings).map((step, index) =>
+    normalizeStep(step, index, transcriptSegmentsById, cueIds, `steps.${index}`, warnings),
   );
   const openQuestionCandidates = arrayFrom(
     firstKnown(raw, [
@@ -288,6 +302,8 @@ function normalizeExtractedRecipeDraft(
       "missingDetails",
       "missing_details",
     ]),
+    "openQuestions",
+    warnings,
   );
   const openQuestions = openQuestionCandidates.map((question, index) =>
     normalizeOpenQuestion(question, index, {
@@ -298,8 +314,16 @@ function normalizeExtractedRecipeDraft(
       stepIds: steps
         .map((step) => asNonEmptyString(step.id))
         .filter((stepId): stepId is string => Boolean(stepId)),
-    }),
+    }, `openQuestions.${index}`, warnings),
   );
+
+  if (!asNonEmptyString(raw.id)) {
+    addWarning(warnings, "id", `Filled missing draft id with draft_${captureId}.`);
+  }
+
+  if (!asNonEmptyString(raw.captureId)) {
+    addWarning(warnings, "captureId", `Filled missing captureId with ${captureId}.`);
+  }
 
   const next: Record<string, unknown> = {
     id: asNonEmptyString(raw.id) ?? `draft_${captureId}`,
@@ -321,23 +345,45 @@ function normalizeExtractedRecipeDraft(
   ]));
   addOptionalString(next, "summary", firstString(raw, ["summary"]));
 
-  return next;
+  return { value: next, warnings };
 }
 
 function normalizeIngredient(
   value: unknown,
   index: number,
   transcriptSegmentsById: Map<string, TranscriptSegmentInput>,
+  path: string,
+  warnings: NormalizationWarning[],
 ) {
   const raw = isRecord(value) ? value : {};
+  if (!isRecord(value)) {
+    addWarning(warnings, path, "Expected ingredient object; normalized from an empty object.");
+  }
+
+  if (!asNonEmptyString(raw.id)) {
+    addWarning(warnings, `${path}.id`, "Filled missing ingredient id.");
+  }
+
   const quantity = asQuantityString(raw.quantity) ?? "unspecified";
+  if (!asQuantityString(raw.quantity)) {
+    addWarning(warnings, `${path}.quantity`, 'Defaulted missing ingredient quantity to "unspecified".');
+  }
+
+  if (typeof raw.optional !== "boolean") {
+    addWarning(warnings, `${path}.optional`, "Defaulted missing ingredient optional flag to false.");
+  }
+
+  if (readBooleanAlias(raw, ["isInferred", "inferred"]) === undefined) {
+    addWarning(warnings, `${path}.isInferred`, "Defaulted missing ingredient inference flag to false.");
+  }
+
   const next: Record<string, unknown> = {
     id: asNonEmptyString(raw.id) ?? stableNumberedId("ing", index),
     name: firstString(raw, ["name", "ingredient"]),
     quantity,
     optional: typeof raw.optional === "boolean" ? raw.optional : false,
     isInferred: readBooleanAlias(raw, ["isInferred", "inferred"]) ?? false,
-    confidence: normalizeConfidence(raw.confidence),
+    confidence: normalizeConfidence(raw.confidence, `${path}.confidence`, warnings),
     provenance: normalizeProvenance(
       firstKnown(raw, [
         "provenance",
@@ -347,6 +393,8 @@ function normalizeIngredient(
         "transcript_segment_ids",
       ]),
       transcriptSegmentsById,
+      `${path}.provenance`,
+      warnings,
     ),
   };
 
@@ -361,17 +409,34 @@ function normalizeStep(
   index: number,
   transcriptSegmentsById: Map<string, TranscriptSegmentInput>,
   cueIds: Set<string>,
+  path: string,
+  warnings: NormalizationWarning[],
 ) {
   const raw = isRecord(value) ? value : {};
+  if (!isRecord(value)) {
+    addWarning(warnings, path, "Expected step object; normalized from an empty object.");
+  }
+
+  if (!asNonEmptyString(raw.id)) {
+    addWarning(warnings, `${path}.id`, "Filled missing step id.");
+  }
+
+  if (readBooleanAlias(raw, ["isInferred", "inferred"]) === undefined) {
+    addWarning(warnings, `${path}.isInferred`, "Defaulted missing step inference flag to false.");
+  }
+
+  const sensoryCueIds = arrayFrom(raw.sensoryCueIds, `${path}.sensoryCueIds`, warnings)
+    .map(asNonEmptyString)
+    .filter((cueId): cueId is string => Boolean(cueId && cueIds.has(cueId)));
+  warnForDroppedIds(raw.sensoryCueIds, sensoryCueIds, `${path}.sensoryCueIds`, warnings);
+
   const next: Record<string, unknown> = {
     id: asNonEmptyString(raw.id) ?? stableNumberedId("step", index),
-    orderIndex: normalizeOrderIndex(raw.orderIndex, raw.order, index),
+    orderIndex: normalizeOrderIndex(raw.orderIndex, raw.order, index, `${path}.orderIndex`, warnings),
     instruction: firstString(raw, ["instruction", "text", "description"]),
-    sensoryCueIds: arrayFrom(raw.sensoryCueIds)
-      .map(asNonEmptyString)
-      .filter((cueId): cueId is string => Boolean(cueId && cueIds.has(cueId))),
+    sensoryCueIds,
     isInferred: readBooleanAlias(raw, ["isInferred", "inferred"]) ?? false,
-    confidence: normalizeConfidence(raw.confidence),
+    confidence: normalizeConfidence(raw.confidence, `${path}.confidence`, warnings),
     provenance: normalizeProvenance(
       firstKnown(raw, [
         "provenance",
@@ -381,6 +446,8 @@ function normalizeStep(
         "transcript_segment_ids",
       ]),
       transcriptSegmentsById,
+      `${path}.provenance`,
+      warnings,
     ),
   };
 
@@ -394,13 +461,23 @@ function normalizeSensoryCue(
   value: unknown,
   index: number,
   transcriptSegmentsById: Map<string, TranscriptSegmentInput>,
+  path: string,
+  warnings: NormalizationWarning[],
 ) {
   const raw = isRecord(value) ? value : {};
+  if (!isRecord(value) && typeof value !== "string") {
+    addWarning(warnings, path, "Expected sensory cue object or string; normalized from an empty object.");
+  }
+
   const cue = typeof value === "string" ? value : firstString(raw, ["cue", "text", "description"]);
   const cueText = asNonEmptyString(cue);
+  if (!asNonEmptyString(raw.id)) {
+    addWarning(warnings, `${path}.id`, "Filled missing sensory cue id.");
+  }
+
   const next: Record<string, unknown> = {
     id: asNonEmptyString(raw.id) ?? stableNumberedId("cue", index),
-    type: normalizeCueType(raw.type, cueText ?? ""),
+    type: normalizeCueType(raw.type, cueText ?? "", `${path}.type`, warnings),
     cue: cueText,
     provenance: normalizeProvenance(
       firstKnown(raw, [
@@ -411,6 +488,8 @@ function normalizeSensoryCue(
         "transcript_segment_ids",
       ]),
       transcriptSegmentsById,
+      `${path}.provenance`,
+      warnings,
     ),
   };
 
@@ -427,14 +506,39 @@ function normalizeOpenQuestion(
     ingredientIds: string[];
     stepIds: string[];
   },
+  path: string,
+  warnings: NormalizationWarning[],
 ) {
   const raw = isRecord(value) ? value : {};
+  if (!isRecord(value) && typeof value !== "string") {
+    addWarning(warnings, path, "Expected open question object or string; normalized from an empty object.");
+  }
+
   const question = typeof value === "string" ? value : firstString(raw, ["question", "text"]);
-  const target = normalizeQuestionTarget(firstKnown(raw, ["target", "targetField", "target_field"]), question);
-  const relatedIngredientIds = filterKnownIds(raw.relatedIngredientIds, relatedIds.ingredientIds);
-  const relatedStepIds = filterKnownIds(raw.relatedStepIds, relatedIds.stepIds);
-  const relatedCueIds = filterKnownIds(raw.relatedCueIds, relatedIds.cueIds);
-  addDefaultQuestionRelation(target, { relatedCueIds, relatedIngredientIds, relatedStepIds }, relatedIds);
+  const target = normalizeQuestionTarget(
+    firstKnown(raw, ["target", "targetField", "target_field"]),
+    question,
+    `${path}.target`,
+    warnings,
+  );
+  const relatedIngredientIds = filterKnownIds(
+    raw.relatedIngredientIds,
+    relatedIds.ingredientIds,
+    `${path}.relatedIngredientIds`,
+    warnings,
+  );
+  const relatedStepIds = filterKnownIds(
+    raw.relatedStepIds,
+    relatedIds.stepIds,
+    `${path}.relatedStepIds`,
+    warnings,
+  );
+  const relatedCueIds = filterKnownIds(raw.relatedCueIds, relatedIds.cueIds, `${path}.relatedCueIds`, warnings);
+  addDefaultQuestionRelation(target, { relatedCueIds, relatedIngredientIds, relatedStepIds }, relatedIds, path, warnings);
+
+  if (!asNonEmptyString(raw.id)) {
+    addWarning(warnings, `${path}.id`, "Filled missing open question id.");
+  }
 
   const next: Record<string, unknown> = {
     id: asNonEmptyString(raw.id) ?? stableNumberedId("q", index),
@@ -442,8 +546,12 @@ function normalizeOpenQuestion(
     whyItMatters:
       firstString(raw, ["whyItMatters", "why_it_matters", "reason"]) ?? defaultWhyItMatters(target),
     target,
-    priority: normalizeConfidence(raw.priority),
+    priority: normalizeConfidence(raw.priority, `${path}.priority`, warnings),
   };
+
+  if (!firstString(raw, ["whyItMatters", "why_it_matters", "reason"])) {
+    addWarning(warnings, `${path}.whyItMatters`, "Defaulted missing whyItMatters text.");
+  }
 
   if (relatedStepIds.length > 0) {
     next.relatedStepIds = relatedStepIds;
@@ -463,9 +571,11 @@ function normalizeOpenQuestion(
 function normalizeProvenance(
   value: unknown,
   transcriptSegmentsById: Map<string, TranscriptSegmentInput>,
+  path: string,
+  warnings: NormalizationWarning[],
 ) {
-  return arrayFrom(value)
-    .map((link) => normalizeProvenanceLink(link, transcriptSegmentsById))
+  return arrayFrom(value, path, warnings)
+    .map((link, index) => normalizeProvenanceLink(link, transcriptSegmentsById, `${path}.${index}`, warnings))
     .filter((link): link is { transcriptSegmentId: string; quote: string; reason: string } =>
       Boolean(link),
     );
@@ -474,6 +584,8 @@ function normalizeProvenance(
 function normalizeProvenanceLink(
   value: unknown,
   transcriptSegmentsById: Map<string, TranscriptSegmentInput>,
+  path: string,
+  warnings: NormalizationWarning[],
 ) {
   if (typeof value === "string") {
     const segment = transcriptSegmentsById.get(value);
@@ -482,6 +594,7 @@ function normalizeProvenanceLink(
       return null;
     }
 
+    addWarning(warnings, path, "Expanded string provenance segment id into a full provenance link.");
     return {
       transcriptSegmentId: segment.id,
       quote: segment.text,
@@ -490,6 +603,7 @@ function normalizeProvenanceLink(
   }
 
   if (!isRecord(value)) {
+    addWarning(warnings, path, "Dropped invalid provenance link.");
     return null;
   }
 
@@ -502,13 +616,23 @@ function normalizeProvenanceLink(
   ]);
 
   if (!transcriptSegmentId) {
+    addWarning(warnings, `${path}.transcriptSegmentId`, "Dropped provenance link without transcript segment id.");
     return null;
   }
 
   const segment = transcriptSegmentsById.get(transcriptSegmentId);
 
   if (!segment) {
+    addWarning(warnings, `${path}.transcriptSegmentId`, `Dropped provenance link for unknown segment ${transcriptSegmentId}.`);
     return null;
+  }
+
+  if (!firstString(value, ["quote", "sourceQuote", "source_quote", "text"])) {
+    addWarning(warnings, `${path}.quote`, "Filled missing provenance quote with full transcript segment text.");
+  }
+
+  if (!firstString(value, ["reason", "rationale"])) {
+    addWarning(warnings, `${path}.reason`, "Filled missing provenance reason with a generic support reason.");
   }
 
   return {
@@ -518,23 +642,45 @@ function normalizeProvenanceLink(
   };
 }
 
-function normalizeOrderIndex(orderIndex: unknown, order: unknown, fallbackIndex: number) {
+function normalizeOrderIndex(
+  orderIndex: unknown,
+  order: unknown,
+  fallbackIndex: number,
+  path: string,
+  warnings: NormalizationWarning[],
+) {
   if (typeof orderIndex === "number" && Number.isInteger(orderIndex) && orderIndex >= 0) {
     return orderIndex;
   }
 
   if (typeof order === "number" && Number.isInteger(order)) {
+    addWarning(warnings, path, "Normalized one-based order field into zero-based orderIndex.");
     return order > 0 ? order - 1 : order;
   }
 
+  addWarning(warnings, path, "Defaulted missing step orderIndex from array position.");
   return fallbackIndex;
 }
 
-function normalizeConfidence(value: unknown): Confidence {
-  return value === "low" || value === "medium" || value === "high" ? value : "medium";
+function normalizeConfidence(
+  value: unknown,
+  path: string,
+  warnings: NormalizationWarning[],
+): Confidence {
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+
+  addWarning(warnings, path, 'Defaulted missing or invalid confidence/priority to "medium".');
+  return "medium";
 }
 
-function normalizeCueType(value: unknown, cue: string) {
+function normalizeCueType(
+  value: unknown,
+  cue: string,
+  path: string,
+  warnings: NormalizationWarning[],
+) {
   if (
     value === "look" ||
     value === "smell" ||
@@ -549,29 +695,40 @@ function normalizeCueType(value: unknown, cue: string) {
   const text = cue.toLowerCase();
 
   if (/\b(smell|aroma|fragrant|scent)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred sensory cue type "smell" from cue text.');
     return "smell";
   }
 
   if (/\b(sound|sizzle|crackle|hiss|pop|hear)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred sensory cue type "sound" from cue text.');
     return "sound";
   }
 
   if (/\b(temperature|hot|warm|cold|heat|low flame|medium flame|high flame)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred sensory cue type "temperature" from cue text.');
     return "temperature";
   }
 
   if (/\b(time|timing|minute|hour|until|after|before|simmer)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred sensory cue type "timing" from cue text.');
     return "timing";
   }
 
   if (/\b(texture|tender|soft|crisp|crunch|thick|thin|coated)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred sensory cue type "texture" from cue text.');
     return "texture";
   }
 
+  addWarning(warnings, path, 'Defaulted missing or invalid sensory cue type to "look".');
   return "look";
 }
 
-function normalizeQuestionTarget(value: unknown, question: unknown): QuestionTarget {
+function normalizeQuestionTarget(
+  value: unknown,
+  question: unknown,
+  path: string,
+  warnings: NormalizationWarning[],
+): QuestionTarget {
   if (
     value === "ingredient" ||
     value === "step" ||
@@ -587,29 +744,36 @@ function normalizeQuestionTarget(value: unknown, question: unknown): QuestionTar
   const text = typeof question === "string" ? question.toLowerCase() : "";
 
   if (/\b(ingredient|quantity|amount|how much|cup|spoon|teaspoon|tablespoon)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred question target "ingredient" from question text.');
     return "ingredient";
   }
 
   if (/\b(how long|when|time|timing|minute|hour)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred question target "timing" from question text.');
     return "timing";
   }
 
   if (/\b(temperature|heat|hot|flame|stove)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred question target "temperature" from question text.');
     return "temperature";
   }
 
   if (/\b(texture|tender|soft|crisp|crunch|thick|thin|glossy)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred question target "texture" from question text.');
     return "texture";
   }
 
   if (/\b(serve|serving|plate|with rice|garnish)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred question target "serving" from question text.');
     return "serving";
   }
 
   if (/\b(family|story|who|where|occasion|context)\b/.test(text)) {
+    addWarning(warnings, path, 'Inferred question target "context" from question text.');
     return "context";
   }
 
+  addWarning(warnings, path, 'Defaulted missing or invalid question target to "step".');
   return "step";
 }
 
@@ -644,6 +808,8 @@ function addDefaultQuestionRelation(
     ingredientIds: string[];
     stepIds: string[];
   },
+  path: string,
+  warnings: NormalizationWarning[],
 ) {
   if (
     relation.relatedCueIds.length > 0 ||
@@ -655,25 +821,36 @@ function addDefaultQuestionRelation(
 
   if (target === "ingredient" && availableIds.ingredientIds[0]) {
     relation.relatedIngredientIds.push(availableIds.ingredientIds[0]);
+    addWarning(warnings, `${path}.relatedIngredientIds`, "Defaulted missing question relation to the first ingredient.");
     return;
   }
 
   if (target === "texture" && availableIds.cueIds[0]) {
     relation.relatedCueIds.push(availableIds.cueIds[0]);
+    addWarning(warnings, `${path}.relatedCueIds`, "Defaulted missing question relation to the first sensory cue.");
     return;
   }
 
   if (availableIds.stepIds[0]) {
     relation.relatedStepIds.push(availableIds.stepIds[0]);
+    addWarning(warnings, `${path}.relatedStepIds`, "Defaulted missing question relation to the first step.");
   }
 }
 
-function filterKnownIds(value: unknown, knownIds: string[]) {
+function filterKnownIds(
+  value: unknown,
+  knownIds: string[],
+  path: string,
+  warnings: NormalizationWarning[],
+) {
   const knownIdSet = new Set(knownIds);
 
-  return arrayFrom(value)
+  const ids = arrayFrom(value, path, warnings)
     .map(asNonEmptyString)
     .filter((id): id is string => Boolean(id && knownIdSet.has(id)));
+
+  warnForDroppedIds(value, ids, path, warnings);
+  return ids;
 }
 
 function firstKnown(value: Record<string, unknown>, keys: string[]) {
@@ -718,8 +895,16 @@ function asQuantityString(value: unknown) {
   return asNonEmptyString(value);
 }
 
-function arrayFrom(value: unknown) {
-  return Array.isArray(value) ? value : [];
+function arrayFrom(value: unknown, path: string, warnings: NormalizationWarning[]) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (value !== undefined && value !== null) {
+    addWarning(warnings, path, "Expected an array; normalized to an empty array.");
+  }
+
+  return [];
 }
 
 function stableNumberedId(prefix: string, index: number) {
@@ -732,6 +917,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function objectKeys(value: unknown) {
   return isRecord(value) ? Object.keys(value) : [];
+}
+
+function warnForDroppedIds(
+  sourceValue: unknown,
+  keptIds: string[],
+  path: string,
+  warnings: NormalizationWarning[],
+) {
+  if (!Array.isArray(sourceValue)) {
+    return;
+  }
+
+  const sourceIds = sourceValue.map(asNonEmptyString).filter((id): id is string => Boolean(id));
+  const keptIdSet = new Set(keptIds);
+  const droppedIds = sourceIds.filter((id) => !keptIdSet.has(id));
+
+  if (droppedIds.length > 0) {
+    addWarning(warnings, path, `Dropped unknown relation ids: ${droppedIds.join(", ")}.`);
+  }
+}
+
+function addWarning(warnings: NormalizationWarning[], path: string, message: string) {
+  warnings.push({ path, message });
 }
 
 function logExtract(message: string, value?: unknown) {
