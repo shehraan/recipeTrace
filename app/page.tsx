@@ -30,15 +30,23 @@ export default function LandingPage() {
           precision.
         </p>
         <p className="mt-6 text-sm leading-relaxed text-stone-600">
-          Walk through a seeded family memory — Nani&apos;s Chicken Curry — from transcript to living
-          recipe with provenance tracing at every step.
+          Walk through Nani&apos;s Chicken Curry as a seeded demo, or paste your own family cooking
+          memory and extract a structured recipe with provenance tracing at every step.
         </p>
-        <Link
-          href="/demo/transcript"
-          className="mt-8 inline-flex items-center justify-center rounded-full bg-amber-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
-        >
-          Start seeded demo
-        </Link>
+        <div className="mt-8 flex flex-wrap gap-3">
+          <Link
+            href="/demo/transcript"
+            className="inline-flex items-center justify-center rounded-full bg-amber-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+          >
+            Start seeded demo
+          </Link>
+          <Link
+            href="/demo/extract"
+            className="inline-flex items-center justify-center rounded-full border border-amber-300 bg-white px-6 py-3 text-sm font-semibold text-amber-800 shadow-sm transition hover:border-amber-400 hover:bg-amber-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+          >
+            Paste your own memory
+          </Link>
+        </div>
       </main>
     </div>
   );
