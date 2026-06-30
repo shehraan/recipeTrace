@@ -56,9 +56,12 @@ Every final step must keep provenance from the draft step.
 User answers should be labeled as user-provided, not transcript-backed.
 
 Rewrite the final LivingRecipe only. Do not return a RecipeDraft.
-Incorporate user answers into step text when safe and natural.
+Your primary job is to rewrite final step instructions naturally using user answers when safe.
+For every user answer whose open question has relatedStepIds, edit the related final step instruction to include the answered detail when the answer is direct and cookable.
+Example: if the original step says "Cook sliced onions in oil until the edges are golden" and the user answered heat level "high", return "Cook sliced onions in oil over high heat until the edges are golden."
+Do not leave a direct step answer only in resolvedQuestions.
 Never replace a step with follow-up question text.
-If an answer is ambiguous, keep the original step and add a small user-provided note in the resolvedQuestions entry.
+If an answer is ambiguous, keep the original step and start the resolvedQuestions answer with "Ambiguous user-provided note:" followed by the answer.
 Return strict JSON only.`;
 
 export async function POST(request: Request) {
@@ -80,7 +83,7 @@ export async function POST(request: Request) {
     return jsonError(400, "Request body must be valid JSON.");
   }
 
-  const requestResult = requestSchema.safeParse(payload);
+  const requestResult = requestSchema.safeParse(normalizeFinalizationRequestPayload(payload));
 
   if (!requestResult.success) {
     return validationError("Invalid living recipe finalization request.", formatZodIssues(requestResult.error));
@@ -163,7 +166,9 @@ export async function POST(request: Request) {
     ]);
   }
 
-  const livingRecipeResult = livingRecipeSchema.safeParse(modelJson);
+  const livingRecipeResult = livingRecipeSchema.safeParse(
+    normalizeLivingRecipeResponse(modelJson, recipeDraft),
+  );
 
   if (!livingRecipeResult.success) {
     return validationError(
@@ -197,6 +202,163 @@ function normalizeFollowUpAnswers(
   }
 
   return Object.fromEntries(followUpAnswers.map((answer) => [answer.questionId, answer]));
+}
+
+function normalizeFinalizationRequestPayload(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  return {
+    ...value,
+    recipeDraft: normalizeRecipeDraftAliases(value.recipeDraft),
+  };
+}
+
+function normalizeRecipeDraftAliases(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const next: Record<string, unknown> = { ...value };
+
+  if (!Array.isArray(next.openQuestions)) {
+    next.openQuestions = Array.isArray(next.followUpQuestions)
+      ? next.followUpQuestions
+      : next.follow_up_questions;
+  }
+
+  delete next.followUpQuestions;
+  delete next.follow_up_questions;
+
+  next.ingredients = normalizeProvenanceOwners(next.ingredients, new Map());
+  next.steps = normalizeProvenanceOwners(next.steps, new Map());
+  next.sensoryCues = normalizeProvenanceOwners(next.sensoryCues, new Map());
+
+  return next;
+}
+
+function normalizeLivingRecipeResponse(value: unknown, recipeDraft: RecipeDraft): unknown {
+  const candidate = isRecord(value) && isRecord(value.livingRecipe) ? value.livingRecipe : value;
+
+  if (!isRecord(candidate)) {
+    return candidate;
+  }
+
+  const next: Record<string, unknown> = { ...candidate };
+
+  if (!Array.isArray(next.unresolvedQuestions)) {
+    next.unresolvedQuestions = Array.isArray(next.openQuestions)
+      ? next.openQuestions
+      : next.followUpQuestions;
+  }
+
+  delete next.openQuestions;
+  delete next.followUpQuestions;
+  delete next.follow_up_questions;
+
+  next.ingredients = normalizeProvenanceOwners(
+    next.ingredients,
+    new Map(recipeDraft.ingredients.map((ingredient) => [ingredient.id, ingredient.provenance])),
+  );
+  next.steps = normalizeProvenanceOwners(
+    next.steps,
+    new Map(recipeDraft.steps.map((step) => [step.id, step.provenance])),
+  );
+  next.sensoryCues = normalizeProvenanceOwners(
+    next.sensoryCues,
+    new Map(recipeDraft.sensoryCues.map((cue) => [cue.id, cue.provenance])),
+  );
+
+  return next;
+}
+
+function normalizeProvenanceOwners(
+  value: unknown,
+  sourceProvenanceById: Map<string, unknown>,
+) {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+
+  return value.map((item) => {
+    if (!isRecord(item)) {
+      return item;
+    }
+
+    const next: Record<string, unknown> = { ...item };
+    const sourceProvenance =
+      typeof next.id === "string" ? sourceProvenanceById.get(next.id) : undefined;
+
+    if (Array.isArray(sourceProvenance) && shouldUseSourceProvenance(next)) {
+      next.provenance = sourceProvenance;
+    } else {
+      next.provenance = normalizeProvenanceLinks(next.provenance ?? next.provenance_links);
+    }
+
+    delete next.provenance_links;
+    delete next.transcript_span_ids;
+    delete next.transcriptSegmentIds;
+
+    return next;
+  });
+}
+
+function shouldUseSourceProvenance(value: Record<string, unknown>) {
+  return (
+    !Array.isArray(value.provenance) ||
+    Array.isArray(value.transcript_span_ids) ||
+    Array.isArray(value.transcriptSegmentIds) ||
+    hasProvenanceAliases(value.provenance)
+  );
+}
+
+function hasProvenanceAliases(value: unknown) {
+  return (
+    Array.isArray(value) &&
+    value.some(
+      (link) =>
+        isRecord(link) &&
+        !("transcriptSegmentId" in link) &&
+        ("transcript_segment_id" in link ||
+          "transcript_span_id" in link ||
+          "transcript_span_ids" in link ||
+          "transcriptSegmentIds" in link),
+    )
+  );
+}
+
+function normalizeProvenanceLinks(value: unknown): unknown {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+
+  return value.map((link) => {
+    if (!isRecord(link)) {
+      return link;
+    }
+
+    const next: Record<string, unknown> = { ...link };
+
+    if (!next.transcriptSegmentId) {
+      next.transcriptSegmentId =
+        next.transcript_segment_id ??
+        next.transcript_span_id ??
+        (Array.isArray(next.transcript_span_ids) ? next.transcript_span_ids[0] : undefined) ??
+        (Array.isArray(next.transcriptSegmentIds) ? next.transcriptSegmentIds[0] : undefined);
+    }
+
+    delete next.transcript_segment_id;
+    delete next.transcript_span_id;
+    delete next.transcript_span_ids;
+    delete next.transcriptSegmentIds;
+
+    return next;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function validateFinalizationInput(
@@ -243,6 +405,7 @@ function validateFinalizedLivingRecipe(
   const errors: ValidationDetail[] = [];
   const draftStepsById = new Map(recipeDraft.steps.map((step) => [step.id, step]));
   const finalStepsById = new Map(livingRecipe.steps.map((step) => [step.id, step]));
+  const draftQuestionsById = new Map(recipeDraft.openQuestions.map((question) => [question.id, question]));
   const answeredQuestionIds = new Set(Object.keys(followUpAnswers));
   const resolvedQuestionIds = new Set(livingRecipe.resolvedQuestions.map((entry) => entry.questionId));
   const fallbackResolvedById = new Map(
@@ -328,6 +491,7 @@ function validateFinalizedLivingRecipe(
     }
 
     const fallbackEntry = fallbackResolvedById.get(entry.questionId);
+    const draftQuestion = draftQuestionsById.get(entry.questionId);
 
     if (
       fallbackEntry &&
@@ -347,6 +511,24 @@ function validateFinalizedLivingRecipe(
         path: `resolvedQuestions.${entry.questionId}.appliedToIngredientIds`,
         message: "Resolved detail must preserve its related ingredient links for evidence display.",
       });
+    }
+
+    if (
+      draftQuestion &&
+      fallbackEntry?.appliedToStepIds?.length &&
+      isDirectStepAnswer(draftQuestion.target, submittedAnswer.answer) &&
+      !isAmbiguousResolvedAnswer(entry.answer)
+    ) {
+      for (const stepId of fallbackEntry.appliedToStepIds) {
+        const finalStep = finalStepsById.get(stepId);
+
+        if (finalStep && !textIncludesAnswer(finalStep.instruction, submittedAnswer.answer)) {
+          errors.push({
+            path: `steps.${stepId}.instruction`,
+            message: `Direct answer for ${entry.questionId} must be incorporated into related final step ${stepId}.`,
+          });
+        }
+      }
     }
   }
 
@@ -412,6 +594,35 @@ function haveSameStringValues(left: string[] | undefined, right: string[] | unde
   return true;
 }
 
+function isDirectStepAnswer(target: RecipeDraft["openQuestions"][number]["target"], answer: string) {
+  if (!["step", "timing", "temperature", "texture"].includes(target)) {
+    return false;
+  }
+
+  const normalized = answer.trim().toLowerCase();
+
+  if (!normalized || /\b(i do not know|don't know|not sure|maybe|depends|unclear)\b/.test(normalized)) {
+    return false;
+  }
+
+  return normalized.split(/\s+/).length <= 5;
+}
+
+function isAmbiguousResolvedAnswer(answer: string) {
+  return answer.trim().toLowerCase().startsWith("ambiguous user-provided note:");
+}
+
+function textIncludesAnswer(text: string, answer: string) {
+  return normalizeComparableText(text).includes(normalizeComparableText(answer));
+}
+
+function normalizeComparableText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 function buildFinalizationUserPrompt({
   recipeDraft,
   transcriptSegments,
@@ -425,7 +636,7 @@ function buildFinalizationUserPrompt({
 }) {
   return `Finalize this LivingRecipe JSON object.
 
-Use the fallbackLivingRecipe as the structural base. You may rewrite the final step instruction text to naturally incorporate safe user-provided answers, but keep the same step ids, order, ingredients, sensory cues, and provenance links.
+Use the fallbackLivingRecipe as the structural base. You must rewrite related final step instruction text to naturally incorporate direct, safe user-provided answers, while keeping the same step ids, order, ingredients, sensory cues, and provenance links.
 
 Important:
 - Return a LivingRecipe object, not a RecipeDraft.
@@ -433,8 +644,9 @@ Important:
 - Preserve all step provenance links exactly from recipeDraft.
 - Put user-provided answer evidence in resolvedQuestions.
 - Do not treat user answers as transcript evidence.
+- For answered questions with relatedStepIds, merge the user's answer into each related step instruction when it is direct and cookable.
 - Never replace a step instruction with a follow-up question.
-- If a user answer is ambiguous, leave the step instruction mostly unchanged and include a small user-provided note in that resolvedQuestions answer.
+- If a user answer is ambiguous, leave the step instruction mostly unchanged and prefix that resolvedQuestions answer with "Ambiguous user-provided note:".
 - Keep unanswered questions in unresolvedQuestions.
 
 recipeDraft:
@@ -453,6 +665,13 @@ Return only one strict JSON object matching the LivingRecipe schema. Do not wrap
 }
 
 function validationError(message: string, details: ValidationDetail[]) {
+  if (process.env.NODE_ENV !== "production") {
+    console.warn("[RecipeTrace] Living recipe finalization validation failed", {
+      message,
+      details: details.slice(0, 5),
+    });
+  }
+
   return NextResponse.json(
     {
       error: message,

@@ -2,7 +2,6 @@
 
 import type { LivingRecipe, OpenQuestion, SensoryCue } from "@/src/lib/recipe/types";
 import {
-  getAppliedAnswersForStep,
   stepHasAppliedAnswers,
   stepHasUnresolvedDetails,
 } from "@/src/lib/recipe/provenance-selection";
@@ -28,7 +27,6 @@ export function LivingRecipePanel({
     selectedStepIdProp ?? (selectionSource === "living" ? selectedStepId : null);
   const handleStepSelect =
     onStepSelectProp ?? ((stepId: string) => openEvidenceDrawer(stepId, "living"));
-  const openQuestions = [...questionsById.values()];
   const cuesByType = groupSensoryCuesByType(recipe.sensoryCues);
 
   return (
@@ -75,11 +73,6 @@ export function LivingRecipePanel({
               showInferredBadge: step.isInferred,
               showAnsweredBadge: stepHasAppliedAnswers(step.id, recipe.resolvedQuestions),
               showUnresolvedBadge: stepHasUnresolvedDetails(step.id, recipe.unresolvedQuestions),
-              appliedAnswers: getAppliedAnswersForStep(
-                step.id,
-                recipe.resolvedQuestions,
-                openQuestions,
-              ),
             })}
           />
         </section>

@@ -13,7 +13,9 @@ export default function LivingPage() {
     finalizeLivingRecipe,
     isFinalizingLivingRecipe,
     finalizeLivingRecipeError,
+    finalizeLivingRecipeStatus,
   } = useDemo();
+  const showDebugStatus = process.env.NODE_ENV !== "production";
 
   return (
     <div className="space-y-6">
@@ -39,6 +41,11 @@ export default function LivingPage() {
           {finalizeLivingRecipeError ? (
             <p className="max-w-sm text-sm leading-relaxed text-amber-800">
               {finalizeLivingRecipeError}
+            </p>
+          ) : null}
+          {showDebugStatus ? (
+            <p className="max-w-sm rounded-full bg-stone-100 px-3 py-1 text-xs font-medium text-stone-600">
+              {finalizeLivingRecipeStatus}
             </p>
           ) : null}
         </div>

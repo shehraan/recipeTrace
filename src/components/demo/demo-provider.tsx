@@ -30,6 +30,7 @@ type DemoContextValue = {
   finalizeLivingRecipe: () => Promise<void>;
   isFinalizingLivingRecipe: boolean;
   finalizeLivingRecipeError: string | null;
+  finalizeLivingRecipeStatus: string;
   selectedStepId: string | null;
   selectionSource: ProvenanceSelectionSource | null;
   isDrawerOpen: boolean;
@@ -46,6 +47,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   const [aiLivingRecipe, setAiLivingRecipe] = useState<LivingRecipe | null>(null);
   const [isFinalizingLivingRecipe, setIsFinalizingLivingRecipe] = useState(false);
   const [finalizeLivingRecipeError, setFinalizeLivingRecipeError] = useState<string | null>(null);
+  const [finalizeLivingRecipeStatus, setFinalizeLivingRecipeStatus] = useState("Using local fallback");
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectionSource, setSelectionSource] = useState<ProvenanceSelectionSource | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -61,11 +63,13 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     setFollowUpAnswersState(answers);
     setAiLivingRecipe(null);
     setFinalizeLivingRecipeError(null);
+    setFinalizeLivingRecipeStatus("Using local fallback");
   }, []);
 
   const finalizeLivingRecipe = useCallback(async () => {
     setIsFinalizingLivingRecipe(true);
     setFinalizeLivingRecipeError(null);
+    setFinalizeLivingRecipeStatus("Generating with AI");
 
     try {
       const response = await fetch("/api/recipes/finalize", {
@@ -90,7 +94,11 @@ export function DemoProvider({ children }: { children: ReactNode }) {
           typeof payload.error === "string"
             ? payload.error
             : "Unable to generate an AI-finalized living recipe.";
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[RecipeTrace] AI finalization failed", payload);
+        }
         setFinalizeLivingRecipeError(`${message} Showing the local living recipe instead.`);
+        setFinalizeLivingRecipeStatus(`AI failed validation: ${message}`);
         return;
       }
 
@@ -100,15 +108,27 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         "livingRecipe" in payload
       ) {
         setAiLivingRecipe(payload.livingRecipe as LivingRecipe);
+        setFinalizeLivingRecipeStatus("Generated with AI");
+        if (process.env.NODE_ENV !== "production") {
+          console.info("[RecipeTrace] AI finalization succeeded", payload);
+        }
       } else {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[RecipeTrace] AI finalization response missing livingRecipe", payload);
+        }
         setFinalizeLivingRecipeError(
           "The finalization response was missing a living recipe. Showing the local living recipe instead.",
         );
+        setFinalizeLivingRecipeStatus("Using local fallback");
       }
     } catch {
       setFinalizeLivingRecipeError(
         "Unable to reach the finalization route. Showing the local living recipe instead.",
       );
+      setFinalizeLivingRecipeStatus("Using local fallback");
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[RecipeTrace] AI finalization request failed");
+      }
     } finally {
       setIsFinalizingLivingRecipe(false);
     }
@@ -158,6 +178,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       finalizeLivingRecipe,
       isFinalizingLivingRecipe,
       finalizeLivingRecipeError,
+      finalizeLivingRecipeStatus,
       selectedStepId,
       selectionSource,
       isDrawerOpen,
@@ -180,6 +201,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       finalizeLivingRecipe,
       isFinalizingLivingRecipe,
       finalizeLivingRecipeError,
+      finalizeLivingRecipeStatus,
       openEvidenceDrawer,
       closeEvidenceDrawer,
       setFollowUpAnswers,
