@@ -54,20 +54,38 @@ Preserve transcript-backed sensory cues.
 Preserve uncertainty when still unresolved.
 Every final step must keep provenance from the draft step.
 User answers should be labeled as user-provided, not transcript-backed.
+Every resolved question must preserve appliedToStepIds and appliedToIngredientIds from the original open question relationship fields.
 
 Rewrite the final LivingRecipe only. Do not return a RecipeDraft.
 Your primary job is to rewrite final step instructions naturally using user answers when safe.
 For every user answer whose open question has relatedStepIds, edit the related final step instruction to include the answered detail when the answer is direct and cookable.
+If a resolved question has relatedStepIds, incorporate the answer into at least one related final step instruction when safe, and into every related step where the answer directly changes that cooking action.
 Example: if the original step says "Cook sliced onions in oil until the edges are golden" and the user answered heat level "high", return "Cook sliced onions in oil over high heat until the edges are golden."
 Do not leave a direct step answer only in resolvedQuestions.
+Never put the answer only in an evidence drawer or note if it directly changes a cooking instruction.
 Never replace a step with follow-up question text.
+Preserve provenance from each draft step exactly on the corresponding final step.
 If an answer is ambiguous, keep the original step and start the resolvedQuestions answer with "Ambiguous user-provided note:" followed by the answer.
 Return strict JSON only.`;
 
+const FINALIZATION_REPAIR_SYSTEM_PROMPT = `You repair a LivingRecipe JSON object that failed validation.
+
+Do not invent missing details.
+Repair only fields identified by the validation errors.
+Preserve all ids, ordering, ingredients, sensory cues, provenance links, sourceSummary counts, questionId values, and user answer text.
+Every resolved question must preserve appliedToStepIds and appliedToIngredientIds from the original open question relationship fields.
+When validation says a direct answer was not incorporated into a related final step, rewrite that step instruction naturally to include the exact user answer when safe.
+Never replace a step with the follow-up question text.
+Never put a direct cooking answer only in resolvedQuestions or notes.
+Return strict JSON only.`;
+
 export async function POST(request: Request) {
+  devLog("Finalize route hit");
+
   const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
+    devLog("Using fallback in client because OpenAI API key is not configured");
     return jsonError(
       500,
       "OpenAI API key is not configured.",
@@ -91,9 +109,11 @@ export async function POST(request: Request) {
 
   const { recipeDraft, transcriptSegments } = requestResult.data;
   const followUpAnswers = normalizeFollowUpAnswers(requestResult.data.followUpAnswers);
+  devLog("Follow-up answer count", { count: Object.keys(followUpAnswers).length });
   const requestErrors = validateFinalizationInput(recipeDraft, transcriptSegments, followUpAnswers);
 
   if (requestErrors.length > 0) {
+    devLog("Validation errors", { stage: "request", errors: requestErrors });
     return validationError("Invalid living recipe finalization request.", requestErrors);
   }
 
@@ -103,38 +123,32 @@ export async function POST(request: Request) {
     transcriptSegments.length,
   );
 
-  const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  const openAiResponse = await callOpenAiForLivingRecipe(apiKey, [
+    {
+      role: "system",
+      content: FINALIZATION_SYSTEM_PROMPT,
     },
-    body: JSON.stringify({
-      model: process.env.OPENAI_FINALIZE_MODEL ?? "gpt-5.4-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content: FINALIZATION_SYSTEM_PROMPT,
-        },
-        {
-          role: "user",
-          content: buildFinalizationUserPrompt({
-            recipeDraft,
-            transcriptSegments,
-            followUpAnswers,
-            fallbackLivingRecipe,
-          }),
-        },
-      ],
-    }),
-  });
+    {
+      role: "user",
+      content: buildFinalizationUserPrompt({
+        recipeDraft,
+        transcriptSegments,
+        followUpAnswers,
+        fallbackLivingRecipe,
+      }),
+    },
+  ]);
 
   if (!openAiResponse.ok) {
+    const detail = await readOpenAiError(openAiResponse);
+    devLog("Using fallback in client because OpenAI finalization failed", {
+      status: openAiResponse.status,
+      detail,
+    });
     return jsonError(
       502,
       "Living recipe finalization failed.",
-      await readOpenAiError(openAiResponse),
+      detail,
     );
   }
 
@@ -167,15 +181,23 @@ export async function POST(request: Request) {
   }
 
   const livingRecipeResult = livingRecipeSchema.safeParse(
-    normalizeLivingRecipeResponse(modelJson, recipeDraft),
+    normalizeLivingRecipeResponse(modelJson, recipeDraft, followUpAnswers),
   );
 
   if (!livingRecipeResult.success) {
+    devLog("Validation errors", {
+      stage: "schema",
+      errors: formatZodIssues(livingRecipeResult.error),
+    });
     return validationError(
       "LivingRecipe failed schema validation.",
       formatZodIssues(livingRecipeResult.error),
     );
   }
+
+  devLog("Resolved questions before validation", {
+    resolvedQuestions: livingRecipeResult.data.resolvedQuestions,
+  });
 
   const guardrailErrors = validateFinalizedLivingRecipe(
     livingRecipeResult.data,
@@ -185,13 +207,182 @@ export async function POST(request: Request) {
   );
 
   if (guardrailErrors.length > 0) {
+    devLog("Validation errors", { stage: "guardrail", errors: guardrailErrors });
+
+    if (shouldRunRepairPass(guardrailErrors)) {
+      devLog("Repair pass ran", { reason: "direct answers were not incorporated" });
+      const repairResult = await repairLivingRecipe({
+        apiKey,
+        failedLivingRecipe: livingRecipeResult.data,
+        validationErrors: guardrailErrors,
+        recipeDraft,
+        transcriptSegments,
+        followUpAnswers,
+        fallbackLivingRecipe,
+      });
+
+      if (repairResult.ok) {
+        return NextResponse.json({
+          livingRecipe: repairResult.livingRecipe,
+          validation: { ok: true, repairRan: true },
+        });
+      }
+
+      devLog("Validation errors", {
+        stage: "repair",
+        errors: repairResult.errors,
+      });
+      return validationError(repairResult.message, repairResult.errors);
+    }
+
+    devLog("Repair pass skipped", { reason: "validation errors were not answer incorporation failures" });
     return validationError("LivingRecipe failed finalization validation.", guardrailErrors);
   }
+
+  devLog("Repair pass skipped", { reason: "initial finalization passed validation" });
 
   return NextResponse.json({
     livingRecipe: livingRecipeResult.data,
     validation: { ok: true },
   });
+}
+
+type ChatMessage = {
+  role: "system" | "user";
+  content: string;
+};
+
+async function callOpenAiForLivingRecipe(apiKey: string, messages: ChatMessage[]) {
+  return fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_FINALIZE_MODEL ?? "gpt-5.4-mini",
+      response_format: { type: "json_object" },
+      messages,
+    }),
+  });
+}
+
+async function repairLivingRecipe({
+  apiKey,
+  failedLivingRecipe,
+  validationErrors,
+  recipeDraft,
+  transcriptSegments,
+  followUpAnswers,
+  fallbackLivingRecipe,
+}: {
+  apiKey: string;
+  failedLivingRecipe: LivingRecipe;
+  validationErrors: ValidationDetail[];
+  recipeDraft: RecipeDraft;
+  transcriptSegments: z.infer<typeof transcriptSegmentSchema>[];
+  followUpAnswers: Record<string, FollowUpAnswer>;
+  fallbackLivingRecipe: LivingRecipe;
+}): Promise<
+  | { ok: true; livingRecipe: LivingRecipe }
+  | { ok: false; message: string; errors: ValidationDetail[] }
+> {
+  const repairResponse = await callOpenAiForLivingRecipe(apiKey, [
+    {
+      role: "system",
+      content: FINALIZATION_REPAIR_SYSTEM_PROMPT,
+    },
+    {
+      role: "user",
+      content: buildFinalizationRepairPrompt({
+        failedLivingRecipe,
+        validationErrors,
+        recipeDraft,
+        transcriptSegments,
+        followUpAnswers,
+      }),
+    },
+  ]);
+
+  if (!repairResponse.ok) {
+    const detail = await readOpenAiError(repairResponse);
+    devLog("Using fallback in client because OpenAI repair failed", {
+      status: repairResponse.status,
+      detail,
+    });
+    return {
+      ok: false,
+      message: "LivingRecipe failed finalization validation.",
+      errors: validationErrors,
+    };
+  }
+
+  const completionPayload: unknown = await repairResponse.json();
+  const completionResult = openAiChatCompletionSchema.safeParse(completionPayload);
+
+  if (!completionResult.success) {
+    return {
+      ok: false,
+      message: "OpenAI returned an unexpected repair response shape.",
+      errors: formatZodIssues(completionResult.error),
+    };
+  }
+
+  const content = completionResult.data.choices[0].message.content;
+
+  if (!content) {
+    return {
+      ok: false,
+      message: "OpenAI returned an empty repair response.",
+      errors: [{ path: "choices.0.message.content", message: "Expected a JSON object string." }],
+    };
+  }
+
+  let modelJson: unknown;
+
+  try {
+    modelJson = JSON.parse(content);
+  } catch {
+    return {
+      ok: false,
+      message: "OpenAI returned invalid repair JSON.",
+      errors: [{ path: "livingRecipe", message: "Repair content could not be parsed as JSON." }],
+    };
+  }
+
+  const livingRecipeResult = livingRecipeSchema.safeParse(
+    normalizeLivingRecipeResponse(modelJson, recipeDraft, followUpAnswers),
+  );
+
+  if (!livingRecipeResult.success) {
+    return {
+      ok: false,
+      message: "Repaired LivingRecipe failed schema validation.",
+      errors: formatZodIssues(livingRecipeResult.error),
+    };
+  }
+
+  devLog("Resolved questions before validation", {
+    stage: "repair",
+    resolvedQuestions: livingRecipeResult.data.resolvedQuestions,
+  });
+
+  const guardrailErrors = validateFinalizedLivingRecipe(
+    livingRecipeResult.data,
+    recipeDraft,
+    fallbackLivingRecipe,
+    followUpAnswers,
+  );
+
+  if (guardrailErrors.length > 0) {
+    return {
+      ok: false,
+      message: "Repaired LivingRecipe failed finalization validation.",
+      errors: guardrailErrors,
+    };
+  }
+
+  return { ok: true, livingRecipe: livingRecipeResult.data };
 }
 
 function normalizeFollowUpAnswers(
@@ -228,6 +419,8 @@ function normalizeRecipeDraftAliases(value: unknown): unknown {
       : next.follow_up_questions;
   }
 
+  next.openQuestions = normalizeOpenQuestionRelationshipAliases(next.openQuestions);
+
   delete next.followUpQuestions;
   delete next.follow_up_questions;
 
@@ -238,7 +431,11 @@ function normalizeRecipeDraftAliases(value: unknown): unknown {
   return next;
 }
 
-function normalizeLivingRecipeResponse(value: unknown, recipeDraft: RecipeDraft): unknown {
+function normalizeLivingRecipeResponse(
+  value: unknown,
+  recipeDraft: RecipeDraft,
+  followUpAnswers: Record<string, FollowUpAnswer>,
+): unknown {
   const candidate = isRecord(value) && isRecord(value.livingRecipe) ? value.livingRecipe : value;
 
   if (!isRecord(candidate)) {
@@ -257,6 +454,12 @@ function normalizeLivingRecipeResponse(value: unknown, recipeDraft: RecipeDraft)
   delete next.followUpQuestions;
   delete next.follow_up_questions;
 
+  next.resolvedQuestions = normalizeResolvedQuestions(
+    next.resolvedQuestions,
+    recipeDraft,
+    followUpAnswers,
+  );
+
   next.ingredients = normalizeProvenanceOwners(
     next.ingredients,
     new Map(recipeDraft.ingredients.map((ingredient) => [ingredient.id, ingredient.provenance])),
@@ -271,6 +474,94 @@ function normalizeLivingRecipeResponse(value: unknown, recipeDraft: RecipeDraft)
   );
 
   return next;
+}
+
+function normalizeOpenQuestionRelationshipAliases(value: unknown): unknown {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+
+  return value.map((question) => {
+    if (!isRecord(question)) {
+      return question;
+    }
+
+    const next: Record<string, unknown> = { ...question };
+
+    if (!Array.isArray(next.relatedStepIds)) {
+      next.relatedStepIds = firstStringArray(
+        next.appliedToStepIds,
+        next.targetStepIds,
+        next.stepIds,
+      );
+    }
+
+    if (!Array.isArray(next.relatedIngredientIds)) {
+      next.relatedIngredientIds = firstStringArray(
+        next.appliedToIngredientIds,
+        next.targetIngredientIds,
+        next.ingredientIds,
+      );
+    }
+
+    delete next.appliedToStepIds;
+    delete next.targetStepIds;
+    delete next.stepIds;
+    delete next.appliedToIngredientIds;
+    delete next.targetIngredientIds;
+    delete next.ingredientIds;
+
+    return next;
+  });
+}
+
+function normalizeResolvedQuestions(
+  value: unknown,
+  recipeDraft: RecipeDraft,
+  followUpAnswers: Record<string, FollowUpAnswer>,
+): unknown {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+
+  const draftQuestionsById = new Map(recipeDraft.openQuestions.map((question) => [question.id, question]));
+
+  return value.map((entry) => {
+    if (!isRecord(entry)) {
+      return entry;
+    }
+
+    const next: Record<string, unknown> = { ...entry };
+    const questionId = typeof next.questionId === "string" ? next.questionId : undefined;
+    const draftQuestion = questionId ? draftQuestionsById.get(questionId) : undefined;
+    const answer = questionId ? followUpAnswers[questionId]?.answer : undefined;
+
+    const draftStepIds = draftQuestion ? getQuestionStepIds(draftQuestion) : undefined;
+    const draftIngredientIds = draftQuestion ? getQuestionIngredientIds(draftQuestion) : undefined;
+
+    if (
+      draftStepIds?.length &&
+      !haveSameStringValues(getStringArray(next.appliedToStepIds), draftStepIds)
+    ) {
+      next.appliedToStepIds = draftStepIds;
+    }
+
+    if (
+      draftIngredientIds?.length &&
+      !haveSameStringValues(getStringArray(next.appliedToIngredientIds), draftIngredientIds)
+    ) {
+      next.appliedToIngredientIds = draftIngredientIds;
+    }
+
+    if (answer && (typeof next.answer !== "string" || !next.answer.includes(answer))) {
+      next.answer =
+        typeof next.answer === "string" && next.answer.trim()
+          ? `${next.answer.trim()} User answer: ${answer}`
+          : answer;
+    }
+
+    return next;
+  });
 }
 
 function normalizeProvenanceOwners(
@@ -594,6 +885,54 @@ function haveSameStringValues(left: string[] | undefined, right: string[] | unde
   return true;
 }
 
+function firstStringArray(...values: unknown[]) {
+  for (const value of values) {
+    const stringArray = getStringArray(value);
+
+    if (stringArray) {
+      return stringArray;
+    }
+  }
+
+  return undefined;
+}
+
+function getStringArray(value: unknown) {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function getQuestionStepIds(question: RecipeDraft["openQuestions"][number]) {
+  return firstStringArray(
+    question.relatedStepIds,
+    (question as Record<string, unknown>).appliedToStepIds,
+    (question as Record<string, unknown>).targetStepIds,
+  );
+}
+
+function getQuestionIngredientIds(question: RecipeDraft["openQuestions"][number]) {
+  return firstStringArray(
+    question.relatedIngredientIds,
+    (question as Record<string, unknown>).appliedToIngredientIds,
+    (question as Record<string, unknown>).targetIngredientIds,
+  );
+}
+
+function shouldRunRepairPass(errors: ValidationDetail[]) {
+  return errors.length > 0 && errors.every(isAnswerIncorporationError);
+}
+
+function isAnswerIncorporationError(error: ValidationDetail) {
+  return (
+    error.path.startsWith("steps.") &&
+    error.path.endsWith(".instruction") &&
+    error.message.startsWith("Direct answer for ")
+  );
+}
+
 function isDirectStepAnswer(target: RecipeDraft["openQuestions"][number]["target"], answer: string) {
   if (!["step", "timing", "temperature", "texture"].includes(target)) {
     return false;
@@ -662,6 +1001,53 @@ fallbackLivingRecipe:
 ${JSON.stringify(fallbackLivingRecipe, null, 2)}
 
 Return only one strict JSON object matching the LivingRecipe schema. Do not wrap it in markdown or add explanatory text.`;
+}
+
+function buildFinalizationRepairPrompt({
+  failedLivingRecipe,
+  validationErrors,
+  recipeDraft,
+  transcriptSegments,
+  followUpAnswers,
+}: {
+  failedLivingRecipe: LivingRecipe;
+  validationErrors: ValidationDetail[];
+  recipeDraft: RecipeDraft;
+  transcriptSegments: z.infer<typeof transcriptSegmentSchema>[];
+  followUpAnswers: Record<string, FollowUpAnswer>;
+}) {
+  return `Repair this LivingRecipe JSON object.
+
+Only change fields required by validationErrors. In particular, if a direct answer was not incorporated into a related step instruction, rewrite that step instruction to include the user answer naturally while preserving the original instruction's transcript-backed cues.
+
+Validation errors:
+${JSON.stringify(validationErrors, null, 2)}
+
+failedLivingRecipe:
+${JSON.stringify(failedLivingRecipe, null, 2)}
+
+recipeDraft:
+${JSON.stringify(recipeDraft, null, 2)}
+
+transcriptSegments:
+${JSON.stringify(transcriptSegments, null, 2)}
+
+followUpAnswers:
+${JSON.stringify(followUpAnswers, null, 2)}
+
+Return only one strict JSON object matching the LivingRecipe schema. Do not wrap it in markdown or add explanatory text.`;
+}
+
+function devLog(message: string, details?: Record<string, unknown>) {
+  if (process.env.NODE_ENV === "production") {
+    return;
+  }
+
+  if (details) {
+    console.info(`[RecipeTrace] ${message}`, details);
+  } else {
+    console.info(`[RecipeTrace] ${message}`);
+  }
 }
 
 function validationError(message: string, details: ValidationDetail[]) {
